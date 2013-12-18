@@ -11,7 +11,7 @@
 #include <inttypes.h>
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
-#include <rdma/fi_socket.h>
+#include <rdma/fi_endpoint.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_tagged.h>
 
@@ -23,7 +23,7 @@
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
 static struct fi_info		*fi_info;
-static fid_t			sockfd, domainfd, ecfd, avfd;
+static fid_t			epfd, domainfd, ecfd, avfd;
 static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
@@ -65,7 +65,8 @@ static void init_fabric(void)
 	addr.sin_port = 0;
 
 	hints.type = FID_RDM;
-	hints.protocol = FI_PROTO_TAGGED;
+	hints.protocol = FI_PROTO_UNSPEC;
+	hints.protocol_cap = FI_PROTO_CAP_TAGGED;
 	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
 	hints.src_addr = (struct sockaddr *) &addr;
 	hints.src_addrlen = sizeof(struct sockaddr_in);
@@ -75,8 +76,8 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_open(fi_info[0].domain_name, fi_info, FI_EXCL, &domainfd, NULL)) {
-		ERROR_MSG("fi_open", err);
+	if (err = fi_domain(fi_info, &domainfd, NULL)) {
+		ERROR_MSG("fi_domain", err);
 		exit(1);
 	}
 
@@ -90,7 +91,7 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	av_attr.av_mask = FI_AV_ATTR_TYPE | FI_AV_ATTR_ADDR_FORMAT;
+	av_attr.mask = FI_AV_ATTR_TYPE | FI_AV_ATTR_ADDR_FORMAT;
 	av_attr.type = FI_AV_MAP;
 	av_attr.addr_format = FI_ADDR;
 
@@ -99,8 +100,8 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_socket(&fi_info[0], &sockfd, NULL)) {
-		ERROR_MSG("fi_socket", err);
+	if (err = fi_endpoint(&fi_info[0], &epfd, NULL)) {
+		ERROR_MSG("fi_endpoint", err);
 		exit(1);
 	}
 
@@ -109,12 +110,12 @@ static void init_fabric(void)
 	resources[1].fid = avfd;
 	resources[1].flags = 0;
 
-	if (err = fi_bind(sockfd, resources, 2)) {
+	if (err = fi_bind(epfd, resources, 2)) {
 		ERROR_MSG("fi_bind", err);
 		exit(1);
 	}
 
-	if (err = fi_getsockname(sockfd, &bound_addr, &bound_addrlen)) {
+	if (err = fi_getepname(epfd, &bound_addr, &bound_addrlen)) {
 		ERROR_MSG("fi_getsockname", err);
 		exit(1);
 	}
@@ -143,7 +144,7 @@ static void get_peer_address(void)
 			exit(1);
 		}
 
-		if (fi_tsendto(sockfd, &bound_addr, bound_addrlen, direct_addr, 0x0ULL, sbuf) < 0) {
+		if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, 0x0ULL, sbuf) < 0) {
 			perror("fi_sendto");
 			exit(1);
 		}
@@ -157,7 +158,7 @@ static void get_peer_address(void)
 		}
 
 	} else {
-		if (fi_trecvfrom(sockfd, &partner_addr, sizeof(partner_addr), NULL, 0x0ULL, 0x0ULL, rbuf) < 0) {
+		if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0x0ULL, 0x0ULL, rbuf) < 0) {
 			perror("fi_recvfrom");
 			exit(1);
 		}
@@ -191,7 +192,7 @@ static void send_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_tsendto(sockfd, sbuf, size, direct_addr, 0x0ULL, sbuf)) < 0) {
+	if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, 0x0ULL, sbuf)) < 0) {
 		ERROR_MSG("fi_sendto", ret);
 		exit(1);
 	}
@@ -216,7 +217,7 @@ static void recv_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_trecvfrom (sockfd, rbuf, size, direct_addr, 0x0ULL, 0x0ULL, rbuf)) < 0) {
+	if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, 0x0ULL, 0x0ULL, rbuf)) < 0) {
 		ERROR_MSG("fi_recvfrom", ret);
 		exit(1);
 	}
