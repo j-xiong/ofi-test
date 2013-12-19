@@ -19,6 +19,7 @@
 #define MAX_MSG_SIZE        (1<<22)
 #define ALIGN               (1<<12)
 #define ERROR_MSG(name,err) fprintf(stderr,"%s: %s\n", name, strerror(-(err)))
+#define MSG_TAG		    (0xFFFF0000FFFF0000ULL)
 
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
@@ -28,6 +29,7 @@ static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
 static void			*direct_addr;
+static int			opt_notag = 0;
 
 static void init_buffer(void)
 {
@@ -66,7 +68,7 @@ static void init_fabric(void)
 
 	hints.type = FID_RDM;
 	hints.protocol = FI_PROTO_UNSPEC;
-	hints.protocol_cap = FI_PROTO_CAP_TAGGED;
+	hints.protocol_cap = FI_PROTO_CAP_TAGGED | FI_PROTO_CAP_MSG;
 	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
 	hints.src_addr = (struct sockaddr *) &addr;
 	hints.src_addrlen = sizeof(struct sockaddr_in);
@@ -144,9 +146,17 @@ static void get_peer_address(void)
 			exit(1);
 		}
 
-		if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, 0x0ULL, sbuf) < 0) {
-			perror("fi_sendto");
-			exit(1);
+		if (opt_notag) {
+			if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, sbuf) < 0) {
+				perror("fi_sendto");
+				exit(1);
+			}
+		}
+		else {
+			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, MSG_TAG, sbuf) < 0) {
+				perror("fi_tsendto");
+				exit(1);
+			}
 		}
 
 		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
@@ -158,9 +168,17 @@ static void get_peer_address(void)
 		}
 
 	} else {
-		if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0x0ULL, 0x0ULL, rbuf) < 0) {
-			perror("fi_recvfrom");
-			exit(1);
+		if (opt_notag) {
+			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, rbuf) < 0) {
+				perror("fi_recvfrom");
+				exit(1);
+			}
+		}
+		else {
+			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, MSG_TAG, 0x0ULL, rbuf) < 0) {
+				perror("fi_trecvfrom");
+				exit(1);
+			}
 		}
 
 		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
@@ -192,9 +210,17 @@ static void send_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, 0x0ULL, sbuf)) < 0) {
-		ERROR_MSG("fi_sendto", ret);
-		exit(1);
+	if (opt_notag) {
+		if ((ret = fi_sendto(epfd, sbuf, size, direct_addr, sbuf)) < 0) {
+			ERROR_MSG("fi_sendto", ret);
+			exit(1);
+		}
+	}
+	else {
+		if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, MSG_TAG, sbuf)) < 0) {
+			ERROR_MSG("fi_tsendto", ret);
+			exit(1);
+		}
 	}
 
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
@@ -217,9 +243,17 @@ static void recv_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, 0x0ULL, 0x0ULL, rbuf)) < 0) {
-		ERROR_MSG("fi_recvfrom", ret);
-		exit(1);
+	if (opt_notag) {
+		if ((ret = fi_recvfrom (epfd, rbuf, size, direct_addr, rbuf)) < 0) {
+			ERROR_MSG("fi_recvfrom", ret);
+			exit(1);
+		}
+	}
+	else {
+		if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, MSG_TAG, 0x0ULL, rbuf)) < 0) {
+			ERROR_MSG("fi_trecvfrom", ret);
+			exit(1);
+		}
 	}
 
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
@@ -238,6 +272,14 @@ static void recv_one(int size)
 int main(int argc, char *argv[])
 {
 	int size;
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "-notag")==0) {
+			opt_notag=1;
+			argc--;
+			argv++;
+		}
+	}
 
 	if (argc > 1) {
 		client = 1;
