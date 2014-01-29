@@ -275,7 +275,6 @@ static void write_one(int size)
 		exit(1);
 	}
 
-#if 0
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
@@ -285,7 +284,6 @@ static void write_one(int size)
 	}
 
 	assert(entry.op_context == sbuf);
-#endif
 	//printf("W: %d\n", size);
 }
 
@@ -305,7 +303,6 @@ static void read_one(int size)
 		exit(1);
 	}
 
-#if 0
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
@@ -316,7 +313,6 @@ static void read_one(int size)
 
 	assert(entry.op_context == rbuf);
 	assert(entry.len == size);
-#endif
 	//printf("R: %d\n", size);
 }
 
@@ -374,35 +370,35 @@ int main(int argc, char *argv[])
 	exchange_info();
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-		repeat = 10;
+		repeat = 1000;
 		printf("write %-8d: ", size);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
 			if (client) {
 				write_one(size);
-				poll_one(size);
-				reset_one(size);
+				//poll_one(size);
+				//reset_one(size);
 			}
 			else {
-				poll_one(size);
-				reset_one(size);
+				//poll_one(size);
+				//reset_one(size);
 				write_one(size);
 			}
 		}
 		t2 = when();
-		printf("%.2lf us\n", (t2-t1)/repeat/2);
+		printf("%.2lf us\n", (t2-t1)/repeat);
 	}
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-		repeat = 10;
+		repeat = 1000;
 		printf("read %-8d: ", size);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
-			reset_one(size);
+			//reset_one(size);
 			read_one(size);
-			poll_one(size);
+			//poll_one(size);
 		}
 		t2 = when();
 		printf("%.2lf us\n", (t2-t1)/repeat);
