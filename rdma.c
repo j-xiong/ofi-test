@@ -13,14 +13,14 @@
 #include <rdma/fi_domain.h>
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_cm.h>
-#include <rdma/fi_tagged.h>
+#include <rdma/fi_rdma.h>
 #include "fi_missing.h"
 
 #define MIN_MSG_SIZE        (1)
-#define MAX_MSG_SIZE        (1<<22)
+//#define MAX_MSG_SIZE        (1<<22)
+#define MAX_MSG_SIZE        (2048)
 #define ALIGN               (1<<12)
 #define ERROR_MSG(name,err) fprintf(stderr,"%s: %s\n", name, strerror(-(err)))
-#define MSG_TAG		    (0xFFFF0000FFFF0000ULL)
 
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
@@ -30,7 +30,12 @@ static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
 static void			*direct_addr;
-static int			opt_notag = 0;
+static struct rdma_info {
+	uint64_t	sbuf_addr;
+	uint64_t	sbuf_key;
+	uint64_t	rbuf_addr;
+	uint64_t	rbuf_key;
+} peer_rdma_info;
 
 static void init_buffer(void)
 {
@@ -46,9 +51,11 @@ static void init_buffer(void)
 
 	memset(sbuf, 'a', MAX_MSG_SIZE);
 	memset(rbuf, 'b', MAX_MSG_SIZE);
+}
 
-	sbuf[MAX_MSG_SIZE - 1] = '\0';
-	rbuf[MAX_MSG_SIZE - 1] = '\0';
+static void reset_buffer(void)
+{
+	memset(rbuf, 'b', MAX_MSG_SIZE);
 }
 
 static void init_fabric(void)
@@ -69,8 +76,10 @@ static void init_fabric(void)
 
 	hints.type = FID_RDM;
 	hints.protocol = FI_PROTO_UNSPEC;
-	hints.protocol_cap = FI_PROTO_CAP_TAGGED | FI_PROTO_CAP_MSG;
-	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
+	hints.protocol_cap = FI_PROTO_CAP_MSG | FI_PROTO_CAP_RDMA;
+//	setting these flags would require passing "struct fi_context *" to the messaging calls
+//	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
+	hints.flags = 0;
 	hints.src_addr = (struct sockaddr *) &addr;
 	hints.src_addrlen = sizeof(struct sockaddr_in);
 
@@ -147,17 +156,9 @@ static void get_peer_address(void)
 			exit(1);
 		}
 
-		if (opt_notag) {
-			if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, sbuf) < 0) {
-				perror("fi_sendto");
-				exit(1);
-			}
-		}
-		else {
-			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, MSG_TAG, sbuf) < 0) {
-				perror("fi_tsendto");
-				exit(1);
-			}
+		if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, sbuf) < 0) {
+			perror("fi_sendto");
+			exit(1);
 		}
 
 		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
@@ -169,17 +170,9 @@ static void get_peer_address(void)
 		}
 
 	} else {
-		if (opt_notag) {
-			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, rbuf) < 0) {
-				perror("fi_recvfrom");
-				exit(1);
-			}
-		}
-		else {
-			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, MSG_TAG, 0x0ULL, rbuf) < 0) {
-				perror("fi_trecvfrom");
-				exit(1);
-			}
+		if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, rbuf) < 0) {
+			perror("fi_recvfrom");
+			exit(1);
 		}
 
 		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
@@ -200,10 +193,77 @@ static void get_peer_address(void)
 			exit(1);
 		}
 	}
+}
+
+static void exchange_info(void)
+{
+	struct fi_ec_tagged_entry entry;
+	struct rdma_info my_rdma_info;
+	int completed, ret;
+
+	my_rdma_info.sbuf_addr = (uint64_t)sbuf;
+	my_rdma_info.sbuf_key = (uint64_t)1;
+	my_rdma_info.rbuf_addr = (uint64_t)rbuf;
+	my_rdma_info.rbuf_key = (uint64_t)2;
+
+	printf("my rdma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
+		my_rdma_info.sbuf_addr, my_rdma_info.sbuf_key,
+		my_rdma_info.rbuf_addr, my_rdma_info.rbuf_key);
+
+	if (fi_sendto(epfd, &my_rdma_info, sizeof(my_rdma_info), direct_addr, &my_rdma_info) < 0) {
+		perror("fi_sendto");
+		exit(1);
+	}
+
+	if (fi_recvfrom(epfd, &peer_rdma_info, sizeof(peer_rdma_info), NULL, &peer_rdma_info) < 0) {
+		perror("fi_recvfrom");
+		exit(1);
+	}
+
+	completed = 0;
+	while (completed < 2) {
+		ret = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0);
+		if (ret < 0) {
+			ERROR_MSG("fi_ec_readfrom", ret);
+			exit(1);
+		}
+		completed += ret;
+	}
+
+	printf("peer rdma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
+		peer_rdma_info.sbuf_addr, peer_rdma_info.sbuf_key,
+		peer_rdma_info.rbuf_addr, peer_rdma_info.rbuf_key);
 
 }
 
-static void send_one(int size)
+static void sync(void)
+{
+	struct fi_ec_tagged_entry entry;
+	int dummy, dummy2;
+	int completed, ret;
+
+	if (fi_sendto(epfd, &dummy, sizeof(dummy), direct_addr, &dummy) < 0) {
+		perror("fi_sendto");
+		exit(1);
+	}
+
+	if (fi_recvfrom(epfd, &dummy2, sizeof(dummy2), NULL, &dummy2) < 0) {
+		perror("fi_recvfrom");
+		exit(1);
+	}
+
+	completed = 0;
+	while (completed < 2) {
+		ret = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0);
+		if (ret < 0) {
+			ERROR_MSG("fi_ec_readfrom", ret);
+			exit(1);
+		}
+		completed += ret;
+	}
+}
+
+static void write_one(int size)
 {
 	struct fi_ec_tagged_entry	entry;
 	void				*src_addr;
@@ -211,19 +271,15 @@ static void send_one(int size)
 	int				completed;
 	int				ret;
 
-	if (opt_notag) {
-		if ((ret = fi_sendto(epfd, sbuf, size, direct_addr, sbuf)) < 0) {
-			ERROR_MSG("fi_sendto", ret);
-			exit(1);
-		}
-	}
-	else {
-		if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, MSG_TAG, sbuf)) < 0) {
-			ERROR_MSG("fi_tsendto", ret);
-			exit(1);
-		}
+	if ((ret = fi_rdma_writeto(epfd, sbuf, size, direct_addr,
+					peer_rdma_info.rbuf_addr,
+					peer_rdma_info.rbuf_key, 
+					sbuf)) < 0) {
+		ERROR_MSG("fi_writeto", ret);
+		exit(1);
 	}
 
+#if 0
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
@@ -233,10 +289,11 @@ static void send_one(int size)
 	}
 
 	assert(entry.op_context == sbuf);
-	printf("S: %d\n", size);
+#endif
+	printf("W: %d\n", size);
 }
 
-static void recv_one(int size)
+static void read_one(int size)
 {
 	struct fi_ec_tagged_entry	entry;
 	void				*src_addr;
@@ -244,19 +301,15 @@ static void recv_one(int size)
 	int				completed;
 	int				ret;
 
-	if (opt_notag) {
-		if ((ret = fi_recvfrom (epfd, rbuf, size, direct_addr, rbuf)) < 0) {
-			ERROR_MSG("fi_recvfrom", ret);
-			exit(1);
-		}
-	}
-	else {
-		if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, MSG_TAG, 0x0ULL, rbuf)) < 0) {
-			ERROR_MSG("fi_trecvfrom", ret);
-			exit(1);
-		}
+	if ((ret = fi_rdma_readfrom (epfd, rbuf, size, direct_addr,
+					peer_rdma_info.sbuf_addr,
+					peer_rdma_info.sbuf_key,
+					rbuf)) < 0) {
+		ERROR_MSG("fi_readfrom", ret);
+		exit(1);
 	}
 
+#if 0
 	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
@@ -267,20 +320,21 @@ static void recv_one(int size)
 
 	assert(entry.op_context == rbuf);
 	assert(entry.len == size);
+#endif
 	printf("R: %d\n", size);
+}
+
+static void poll_one(int size)
+{
+	volatile char *p = rbuf + size - 1;
+	while (*p != 'a')
+		;
+	printf("P: %d\n", size);
 }
 
 int main(int argc, char *argv[])
 {
 	int size;
-
-	if (argc > 1) {
-		if (strcmp(argv[1], "-notag")==0) {
-			opt_notag=1;
-			argc--;
-			argv++;
-		}
-	}
 
 	if (argc > 1) {
 		client = 1;
@@ -293,17 +347,28 @@ int main(int argc, char *argv[])
 
 	get_peer_address();
 
+	exchange_info();
+
 	if (client) {
 		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			recv_one(size);
-			send_one(size);
+			write_one(size);
+			poll_one(size);
 		}
 	} else {
 		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			send_one(size);
-			recv_one(size);
+			poll_one(size);
+			write_one(size);
 		}
 	}
+
+	reset_buffer();
+
+	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
+		read_one(size);
+		poll_one(size);
+	}
+	
+	sync();
 
 	return 0;
 }
