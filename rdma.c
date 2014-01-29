@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -50,11 +51,6 @@ static void init_buffer(void)
 	}
 
 	memset(sbuf, 'a', MAX_MSG_SIZE);
-	memset(rbuf, 'b', MAX_MSG_SIZE);
-}
-
-static void reset_buffer(void)
-{
 	memset(rbuf, 'b', MAX_MSG_SIZE);
 }
 
@@ -290,7 +286,7 @@ static void write_one(int size)
 
 	assert(entry.op_context == sbuf);
 #endif
-	printf("W: %d\n", size);
+	//printf("W: %d\n", size);
 }
 
 static void read_one(int size)
@@ -321,20 +317,48 @@ static void read_one(int size)
 	assert(entry.op_context == rbuf);
 	assert(entry.len == size);
 #endif
-	printf("R: %d\n", size);
+	//printf("R: %d\n", size);
 }
 
-static void poll_one(int size)
+static inline void poll_one(int size)
 {
 	volatile char *p = rbuf + size - 1;
 	while (*p != 'a')
 		;
-	printf("P: %d\n", size);
+	//printf("P: %d\n", size);
+}
+
+static inline void reset_one(int size)
+{
+	rbuf[size-1] = 'b';
+}
+
+static double when(void)
+{
+	struct timeval tv;
+	static struct timeval tv0;
+	static int first = 1;
+	int err;
+
+	err = gettimeofday(&tv, NULL);
+	if (err) {
+		perror("gettimeofday");
+		return 0;
+	}
+
+	if (first) {
+		tv0 = tv;
+		first = 0;
+	}
+	return (double)(tv.tv_sec - tv0.tv_sec) * 1.0e6 + (double)(tv.tv_usec - tv0.tv_usec); 
+//	return (double)tv.tv_sec * 1.0e6 + (double)tv.tv_usec; 
 }
 
 int main(int argc, char *argv[])
 {
 	int size;
+	double t1, t2;
+	int repeat, i;
 
 	if (argc > 1) {
 		client = 1;
@@ -349,23 +373,39 @@ int main(int argc, char *argv[])
 
 	exchange_info();
 
-	if (client) {
-		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			write_one(size);
-			poll_one(size);
+	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
+		repeat = 10;
+		printf("write %-8d: ", size);
+		fflush(stdout);
+		t1 = when();
+		for (i=0; i<repeat; i++) {
+			if (client) {
+				write_one(size);
+				poll_one(size);
+				reset_one(size);
+			}
+			else {
+				poll_one(size);
+				reset_one(size);
+				write_one(size);
+			}
 		}
-	} else {
-		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			poll_one(size);
-			write_one(size);
-		}
+		t2 = when();
+		printf("%.2lf us\n", (t2-t1)/repeat/2);
 	}
 
-	reset_buffer();
-
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-		read_one(size);
-		poll_one(size);
+		repeat = 10;
+		printf("read %-8d: ", size);
+		fflush(stdout);
+		t1 = when();
+		for (i=0; i<repeat; i++) {
+			reset_one(size);
+			read_one(size);
+			poll_one(size);
+		}
+		t2 = when();
+		printf("%.2lf us\n", (t2-t1)/repeat);
 	}
 	
 	sync();

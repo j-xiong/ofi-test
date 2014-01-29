@@ -1,3 +1,4 @@
+#ifdef _FI_ENDPOINT_H_
 static inline ssize_t fi_recvfrom(fid_t fid, void *buf, size_t len,
 		const void *src_addr, void *context) 
 {
@@ -7,7 +8,9 @@ static inline ssize_t fi_recvfrom(fid_t fid, void *buf, size_t len,
 	FI_ASSERT_OP(ep->msg, struct fi_ops_msg, recvfrom);
 	return ep->msg->recvfrom(fid, buf, len, src_addr, context); 
 }
+#endif
 
+#ifdef _FI_RDMA_H_
 static inline int fi_rdma_writeto(fid_t fid, const void *buf, size_t len, 
                               const void *dst_addr, uint64_t addr, be64_t key,
                               void *context)
@@ -30,4 +33,4 @@ static inline int fi_rdma_readfrom(fid_t fid, void *buf, size_t len,
         return ep->rdma->readfrom(fid, buf, len, 
                         src_addr, addr,key, context);
 }
-
+#endif

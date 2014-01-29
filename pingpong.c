@@ -233,7 +233,7 @@ static void send_one(int size)
 	}
 
 	assert(entry.op_context == sbuf);
-	printf("S: %d\n", size);
+//	printf("S: %d\n", size);
 }
 
 static void recv_one(int size)
@@ -267,12 +267,35 @@ static void recv_one(int size)
 
 	assert(entry.op_context == rbuf);
 	assert(entry.len == size);
-	printf("R: %d\n", size);
+//	printf("R: %d\n", size);
+}
+
+static double when(void)
+{
+	struct timeval tv;
+	static struct timeval tv0;
+	static int first = 1;
+	int err;
+
+	err = gettimeofday(&tv, NULL);
+	if (err) {
+		perror("gettimeofday");
+		return 0;
+	}
+
+	if (first) {
+		tv0 = tv;
+		first = 0;
+	}
+	return (double)(tv.tv_sec - tv0.tv_sec) * 1.0e6 + (double)(tv.tv_usec - tv0.tv_usec); 
+//	return (double)tv.tv_sec * 1.0e6 + (double)tv.tv_usec; 
 }
 
 int main(int argc, char *argv[])
 {
 	int size;
+	int i, repeat;
+	double t1, t2;
 
 	if (argc > 1) {
 		if (strcmp(argv[1], "-notag")==0) {
@@ -293,16 +316,23 @@ int main(int argc, char *argv[])
 
 	get_peer_address();
 
-	if (client) {
-		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			recv_one(size);
-			send_one(size);
+	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
+		repeat = 100;
+		printf("send/recv %-8d: ", size);
+		fflush(stdout);
+		t1 = when();
+		for (i=0; i<repeat; i++) {
+			if (client) {
+				recv_one(size);
+				send_one(size);
+			}
+			else {
+				send_one(size);
+				recv_one(size);
+			}
 		}
-	} else {
-		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-			send_one(size);
-			recv_one(size);
-		}
+		t2 = when();
+		printf("%.2lf us\n", (t2-t1)/repeat/2);
 	}
 
 	return 0;
