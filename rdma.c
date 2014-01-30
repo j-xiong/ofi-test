@@ -18,8 +18,7 @@
 #include "fi_missing.h"
 
 #define MIN_MSG_SIZE        (1)
-//#define MAX_MSG_SIZE        (1<<22)
-#define MAX_MSG_SIZE        (2048)
+#define MAX_MSG_SIZE        (1<<22)
 #define ALIGN               (1<<12)
 #define ERROR_MSG(name,err) fprintf(stderr,"%s: %s\n", name, strerror(-(err)))
 
@@ -257,6 +256,8 @@ static void sync(void)
 		}
 		completed += ret;
 	}
+
+	printf("================== sync ==================\n");
 }
 
 static void write_one(int size)
@@ -353,7 +354,7 @@ static double when(void)
 int main(int argc, char *argv[])
 {
 	int size;
-	double t1, t2;
+	double t1, t2, t;
 	int repeat, i;
 
 	if (argc > 1) {
@@ -368,6 +369,8 @@ int main(int argc, char *argv[])
 	get_peer_address();
 
 	exchange_info();
+
+	sync();
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 		repeat = 1000;
@@ -387,12 +390,15 @@ int main(int argc, char *argv[])
 			}
 		}
 		t2 = when();
-		printf("%.2lf us\n", (t2-t1)/repeat);
+		t = (t2 - t1) / repeat;
+		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 	}
+
+	sync();
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 		repeat = 1000;
-		printf("read %-8d: ", size);
+		printf("read  %-8d: ", size);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
@@ -401,7 +407,8 @@ int main(int argc, char *argv[])
 			//poll_one(size);
 		}
 		t2 = when();
-		printf("%.2lf us\n", (t2-t1)/repeat);
+		t = (t2 - t1) / repeat;
+		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 	}
 	
 	sync();
