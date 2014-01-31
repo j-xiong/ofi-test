@@ -294,8 +294,8 @@ static double when(void)
 int main(int argc, char *argv[])
 {
 	int size;
-	int i, repeat;
-	double t1, t2;
+	int i, n, repeat;
+	double t1, t2, t;
 
 	if (argc > 1) {
 		if (strcmp(argv[1], "-notag")==0) {
@@ -317,8 +317,14 @@ int main(int argc, char *argv[])
 	get_peer_address();
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-		repeat = 100;
-		printf("send/recv %-8d: ", size);
+		repeat = 1000;
+		n = size >> 16;
+		while (n) {
+			repeat >>= 1;
+			n >>= 1;
+		}
+
+		printf("send/recv %-8d (x %4d): ", size, repeat);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
@@ -332,7 +338,8 @@ int main(int argc, char *argv[])
 			}
 		}
 		t2 = when();
-		printf("%.2lf us\n", (t2-t1)/repeat/2);
+		t = (t2 - t1) / repeat / 2;
+		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 	}
 
 	return 0;

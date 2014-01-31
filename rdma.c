@@ -257,7 +257,7 @@ static void sync(void)
 		completed += ret;
 	}
 
-	printf("================== sync ==================\n");
+	printf("====================== sync =======================\n");
 }
 
 static void write_one(int size)
@@ -355,7 +355,7 @@ int main(int argc, char *argv[])
 {
 	int size;
 	double t1, t2, t;
-	int repeat, i;
+	int repeat, i, n;
 
 	if (argc > 1) {
 		client = 1;
@@ -374,7 +374,13 @@ int main(int argc, char *argv[])
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 		repeat = 1000;
-		printf("write %-8d: ", size);
+		n = size >> 16;
+		while (n) {
+			repeat >>= 1;
+			n >>= 1;
+		}
+
+		printf("write %-8d (x %4d): ", size, repeat);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
@@ -398,7 +404,13 @@ int main(int argc, char *argv[])
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 		repeat = 1000;
-		printf("read  %-8d: ", size);
+		n = size >> 16;
+		while (n) {
+			repeat >>= 1;
+			n >>= 1;
+		}
+
+		printf("read  %-8d (x %4d): ", size, repeat);
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
