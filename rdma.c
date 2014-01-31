@@ -413,5 +413,7 @@ int main(int argc, char *argv[])
 	
 	sync();
 
+	sleep(1);
+
 	return 0;
 }
