@@ -30,6 +30,7 @@ static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
 static void			*direct_addr;
+static int			opt_bidir = 0;
 static struct rdma_info {
 	uint64_t	sbuf_addr;
 	uint64_t	sbuf_key;
@@ -358,6 +359,14 @@ int main(int argc, char *argv[])
 	int repeat, i, n;
 
 	if (argc > 1) {
+		if (strcmp(argv[1], "-bidir")==0) {
+			opt_bidir=1;
+			argc--;
+			argv++;
+		}
+	}
+
+	if (argc > 1) {
 		client = 1;
 		server_name = strdup(argv[1]);
 	}
@@ -389,7 +398,7 @@ int main(int argc, char *argv[])
 				//poll_one(size);
 				//reset_one(size);
 			}
-			else {
+			else if (opt_bidir) {
 				//poll_one(size);
 				//reset_one(size);
 				write_one(size);
@@ -414,9 +423,11 @@ int main(int argc, char *argv[])
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
-			//reset_one(size);
-			read_one(size);
-			//poll_one(size);
+			if (client || opt_bidir) {
+				//reset_one(size);
+				read_one(size);
+				//poll_one(size);
+			}
 		}
 		t2 = when();
 		t = (t2 - t1) / repeat;
