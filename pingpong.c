@@ -25,12 +25,13 @@
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
 static struct fi_info		*fi_info;
-static fid_t			epfd, domainfd, ecfd, avfd;
+static fid_t			epfd, domainfd, ecfd, avfd, fabricfd;
 static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
 static void			*direct_addr;
 static int			opt_notag = 0;
+static struct fi_context	sctxt, rctxt;
 
 static void init_buffer(void)
 {
@@ -79,7 +80,12 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_domain(fi_info, &domainfd, NULL)) {
+	if (err = fi_fabric(fi_info->fabric_name, 0, &fabricfd, NULL)) {
+		ERROR_MSG("fi_fabric", err);
+		exit(1);
+	}
+
+	if (err = fi_fdomain(fabricfd, fi_info, &domainfd, NULL)) {
 		ERROR_MSG("fi_domain", err);
 		exit(1);
 	}
@@ -103,7 +109,7 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_endpoint(&fi_info[0], &epfd, NULL)) {
+	if (err = fi_endpoint(domainfd, &fi_info[0], &epfd, NULL)) {
 		ERROR_MSG("fi_endpoint", err);
 		exit(1);
 	}
@@ -131,11 +137,11 @@ static void get_peer_address(void)
 	int				completed, err;
 
 	if (client) {
-		if (!fi_info[0].dst_addr) {
+		if (!fi_info[0].dest_addr) {
 			fprintf(stderr, "couldn't get server address\n");
 			exit(1);
 		}
-		memcpy(&partner_addr, fi_info[0].dst_addr, fi_info[0].dst_addrlen);
+		memcpy(&partner_addr, fi_info[0].dest_addr, fi_info[0].dest_addrlen);
 
 		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
 			ERROR_MSG("fi_av_map", err);
@@ -148,13 +154,13 @@ static void get_peer_address(void)
 		}
 
 		if (opt_notag) {
-			if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, sbuf) < 0) {
+			if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, &sctxt) < 0) {
 				perror("fi_sendto");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, MSG_TAG, sbuf) < 0) {
+			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, MSG_TAG, &sctxt) < 0) {
 				perror("fi_tsendto");
 				exit(1);
 			}
@@ -170,13 +176,13 @@ static void get_peer_address(void)
 
 	} else {
 		if (opt_notag) {
-			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, rbuf) < 0) {
+			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, &rctxt) < 0) {
 				perror("fi_recvfrom");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, MSG_TAG, 0x0ULL, rbuf) < 0) {
+			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, MSG_TAG, 0x0ULL, &rctxt) < 0) {
 				perror("fi_trecvfrom");
 				exit(1);
 			}
@@ -212,13 +218,13 @@ static void send_one(int size)
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_sendto(epfd, sbuf, size, direct_addr, sbuf)) < 0) {
+		if ((ret = fi_sendto(epfd, sbuf, size, direct_addr, &sctxt)) < 0) {
 			ERROR_MSG("fi_sendto", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, MSG_TAG, sbuf)) < 0) {
+		if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, MSG_TAG, &sctxt)) < 0) {
 			ERROR_MSG("fi_tsendto", ret);
 			exit(1);
 		}
@@ -232,7 +238,7 @@ static void send_one(int size)
 		exit(1);
 	}
 
-	assert(entry.op_context == sbuf);
+	assert(entry.op_context == &sctxt);
 //	printf("S: %d\n", size);
 }
 
@@ -245,13 +251,13 @@ static void recv_one(int size)
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_recvfrom (epfd, rbuf, size, direct_addr, rbuf)) < 0) {
+		if ((ret = fi_recvfrom (epfd, rbuf, size, direct_addr, &rctxt)) < 0) {
 			ERROR_MSG("fi_recvfrom", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, MSG_TAG, 0x0ULL, rbuf)) < 0) {
+		if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
 			ERROR_MSG("fi_trecvfrom", ret);
 			exit(1);
 		}
@@ -265,7 +271,7 @@ static void recv_one(int size)
 		exit(1);
 	}
 
-	assert(entry.op_context == rbuf);
+	assert(entry.op_context == &rctxt);
 	assert(entry.len == size);
 //	printf("R: %d\n", size);
 }
