@@ -14,7 +14,6 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_tagged.h>
-#include "fi_missing.h"
 
 #define MIN_MSG_SIZE        (1)
 #define MAX_MSG_SIZE        (1<<22)
@@ -25,7 +24,11 @@
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
 static struct fi_info		*fi_info;
-static fid_t			epfd, domainfd, ecfd, avfd, fabricfd;
+static struct fid_fabric	*fabricfd;
+static struct fid_domain	*domainfd;
+static struct fid_ep		*epfd;
+static struct fid_eq		*eqfd;
+static struct fid_av		*avfd;
 static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
@@ -56,14 +59,14 @@ static void init_fabric(void)
 {
 	struct sockaddr_in	addr;
 	struct fi_info		hints;
-	struct fi_ec_attr	ec_attr;
+	struct fi_eq_attr	eq_attr;
 	struct fi_av_attr	av_attr;
 	struct fi_resource	resources[2];
 	int 			err;
 
 	memset(&addr, 0, sizeof(addr));
 	memset(&hints, 0, sizeof(hints));
-	memset(&ec_attr, 0, sizeof(ec_attr));
+	memset(&eq_attr, 0, sizeof(eq_attr));
 	memset(&av_attr, 0, sizeof(av_attr));
 
 	addr.sin_port = 0;
@@ -90,19 +93,17 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	ec_attr.domain = FI_EC_DOMAIN_COMP;
-	ec_attr.type = FI_EC_QUEUE;
-	ec_attr.format = FI_EC_FORMAT_TAGGED;
-	ec_attr.size = 100;
+	eq_attr.domain = FI_EQ_DOMAIN_COMP;
+	eq_attr.format = FI_EQ_FORMAT_TAGGED;
+	eq_attr.size = 100;
 
-	if (err = fi_ec_open(domainfd, &ec_attr, &ecfd, NULL)) {
-		ERROR_MSG("fi_ec_open", err);
+	if (err = fi_eq_open(domainfd, &eq_attr, &eqfd, NULL)) {
+		ERROR_MSG("fi_eq_open", err);
 		exit(1);
 	}
 
-	av_attr.mask = FI_AV_ATTR_TYPE | FI_AV_ATTR_ADDR_FORMAT;
+	av_attr.mask = FI_AV_ATTR_TYPE;
 	av_attr.type = FI_AV_MAP;
-	av_attr.addr_format = FI_ADDR;
 
 	if (err = fi_av_open(domainfd, &av_attr, &avfd, NULL)) {
 		ERROR_MSG("fi_av_open", err);
@@ -114,18 +115,18 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	resources[0].fid = ecfd;
+	resources[0].fid = (fid_t)eqfd;
 	resources[0].flags = FI_SEND | FI_RECV;
-	resources[1].fid = avfd;
+	resources[1].fid = (fid_t)avfd;
 	resources[1].flags = 0;
 
-	if (err = fi_bind(epfd, resources, 2)) {
+	if (err = fi_bind((fid_t)epfd, resources, 2)) {
 		ERROR_MSG("fi_bind", err);
 		exit(1);
 	}
 
-	if (err = fi_getepname(epfd, &bound_addr, &bound_addrlen)) {
-		ERROR_MSG("fi_getsockname", err);
+	if (err = fi_getname((fid_t)epfd, &bound_addr, &bound_addrlen)) {
+		ERROR_MSG("fi_getname", err);
 		exit(1);
 	}
 }
@@ -133,7 +134,7 @@ static void init_fabric(void)
 static void get_peer_address(void)
 {
 	struct sockaddr_in		partner_addr;
-	struct fi_ec_tagged_entry	entry;
+	struct fi_eq_tagged_entry	entry;
 	int				completed, err;
 
 	if (client) {
@@ -154,45 +155,45 @@ static void get_peer_address(void)
 		}
 
 		if (opt_notag) {
-			if (fi_sendto(epfd, &bound_addr, bound_addrlen, direct_addr, &sctxt) < 0) {
+			if (fi_sendto(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, &sctxt) < 0) {
 				perror("fi_sendto");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, direct_addr, MSG_TAG, &sctxt) < 0) {
+			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, MSG_TAG, &sctxt) < 0) {
 				perror("fi_tsendto");
 				exit(1);
 			}
 		}
 
-		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_ec_readfrom", completed);
+			ERROR_MSG("fi_eq_readfrom", completed);
 			exit(1);
 		}
 
 	} else {
 		if (opt_notag) {
-			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, &rctxt) < 0) {
+			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, NULL, &rctxt) < 0) {
 				perror("fi_recvfrom");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, MSG_TAG, 0x0ULL, &rctxt) < 0) {
+			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, NULL, MSG_TAG, 0x0ULL, &rctxt) < 0) {
 				perror("fi_trecvfrom");
 				exit(1);
 			}
 		}
 
-		while (! (completed = fi_ec_readfrom(ecfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_ec_readfrom", completed);
+			ERROR_MSG("fi_eq_readfrom", completed);
 			exit(1);
 		}
 
@@ -211,30 +212,30 @@ static void get_peer_address(void)
 
 static void send_one(int size)
 {
-	struct fi_ec_tagged_entry	entry;
+	struct fi_eq_tagged_entry	entry;
 	void				*src_addr;
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_sendto(epfd, sbuf, size, direct_addr, &sctxt)) < 0) {
+		if ((ret = fi_sendto(epfd, sbuf, size, NULL, direct_addr, &sctxt)) < 0) {
 			ERROR_MSG("fi_sendto", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_tsendto(epfd, sbuf, size, direct_addr, MSG_TAG, &sctxt)) < 0) {
+		if ((ret = fi_tsendto(epfd, sbuf, size, NULL, direct_addr, MSG_TAG, &sctxt)) < 0) {
 			ERROR_MSG("fi_tsendto", ret);
 			exit(1);
 		}
 	}
 
-	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_ec_read", completed);
+		ERROR_MSG("fi_eq_read", completed);
 		exit(1);
 	}
 
@@ -244,30 +245,30 @@ static void send_one(int size)
 
 static void recv_one(int size)
 {
-	struct fi_ec_tagged_entry	entry;
+	struct fi_eq_tagged_entry	entry;
 	void				*src_addr;
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_recvfrom (epfd, rbuf, size, direct_addr, &rctxt)) < 0) {
+		if ((ret = fi_recvfrom (epfd, rbuf, size, NULL, direct_addr, &rctxt)) < 0) {
 			ERROR_MSG("fi_recvfrom", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_trecvfrom (epfd, rbuf, size, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
+		if ((ret = fi_trecvfrom (epfd, rbuf, size, NULL, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
 			ERROR_MSG("fi_trecvfrom", ret);
 			exit(1);
 		}
 	}
 
-	while (!(completed = fi_ec_readfrom(ecfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_ec_read", completed);
+		ERROR_MSG("fi_eq_read", completed);
 		exit(1);
 	}
 
