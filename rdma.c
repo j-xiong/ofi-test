@@ -36,12 +36,12 @@ static size_t			bound_addrlen = sizeof(bound_addr);
 static void			*direct_addr;
 static int			opt_bidir = 0;
 static struct fi_context	sctxt, rctxt;
-static struct rdma_info {
+static struct rma_info {
 	uint64_t	sbuf_addr;
 	uint64_t	sbuf_key;
 	uint64_t	rbuf_addr;
 	uint64_t	rbuf_key;
-} peer_rdma_info;
+} peer_rma_info;
 
 static void init_buffer(void)
 {
@@ -65,7 +65,6 @@ static void init_fabric(void)
 	struct fi_info		hints;
 	struct fi_eq_attr	eq_attr;
 	struct fi_av_attr	av_attr;
-	struct fi_resource	resources[2];
 	int 			err;
 
 	memset(&addr, 0, sizeof(addr));
@@ -77,13 +76,9 @@ static void init_fabric(void)
 
 	hints.type = FID_RDM;
 	hints.protocol = FI_PROTO_UNSPEC;
-	hints.protocol_cap = FI_PROTO_CAP_MSG | FI_PROTO_CAP_RMA;
-//	setting these flags would require passing "struct fi_context *" to the messaging calls
-//	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
-//	hints.src_addr = (struct sockaddr *) &addr;
-//	hints.src_addrlen = sizeof(struct sockaddr_in);
+	hints.ep_cap = FI_MSG | FI_RMA;
 
-	if (err = fi_getinfo(server_name, NULL, &hints, &fi_info)) {
+	if (err = fi_getinfo(server_name, NULL, 0, &hints, &fi_info)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
@@ -120,13 +115,13 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	resources[0].fid = (fid_t)eqfd;
-	resources[0].flags = FI_SEND | FI_RECV;
-	resources[1].fid = (fid_t)avfd;
-	resources[1].flags = 0;
+	if (err = fi_bind((fid_t)epfd, (fid_t)eqfd, FI_SEND | FI_RECV)) {
+		ERROR_MSG("fi_bind eq", err);
+		exit(1);
+	}
 
-	if (err = fi_bind((fid_t)epfd, resources, 2)) {
-		ERROR_MSG("fi_bind", err);
+	if (err = fi_bind((fid_t)epfd, (fid_t)avfd, 0)) {
+		ERROR_MSG("fi_bind av", err);
 		exit(1);
 	}
 
@@ -151,11 +146,6 @@ static void get_peer_address(void)
 
 		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
 			ERROR_MSG("fi_av_map", err);
-			exit(1);
-		}
-
-		if (err = fi_av_sync(avfd, 0, NULL)) {
-			ERROR_MSG("fi_av_sync", err);
 			exit(1);
 		}
 
@@ -190,59 +180,50 @@ static void get_peer_address(void)
 			ERROR_MSG("fi_av_map", err);
 			exit(1);
 		}
-
-
-		if (err = fi_av_sync(avfd, 0, NULL)) {
-			ERROR_MSG("fi_av_sync", err);
-			exit(1);
-		}
 	}
 }
 
 static void exchange_info(void)
 {
 	struct fi_eq_tagged_entry entry;
-	struct rdma_info my_rdma_info;
+	struct rma_info my_rma_info;
 	int completed, ret;
-	struct fi_resource fids;
 
-	if (fi_mr_reg(domainfd, sbuf, MAX_MSG_SIZE, -1, 0, 0, &smrfd, NULL)) {
+	if (fi_mr_reg(domainfd, sbuf, MAX_MSG_SIZE, FI_READ|FI_REMOTE_READ, 0, 1, 0, &smrfd, NULL)) {
 		perror("fi_mr_reg");
 		exit(1);
 	}
 
-	if (fi_mr_reg(domainfd, rbuf, MAX_MSG_SIZE, -1, 0, 0, &rmrfd, NULL)) {
+	if (fi_mr_reg(domainfd, rbuf, MAX_MSG_SIZE, FI_WRITE|FI_REMOTE_WRITE, 0, 1, 0, &rmrfd, NULL)) {
 		perror("fi_mr_reg");
 		exit(1);
 	}
 
-	fids.fid = (fid_t)eqfd;
-	fids.flags = 0;
-	if (fi_bind((fid_t)smrfd, &fids, 1)) {
+	if (fi_bind((fid_t)smrfd, (fid_t)eqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
 
-	if (fi_bind((fid_t)rmrfd, &fids, 1)) {
+	if (fi_bind((fid_t)rmrfd, (fid_t)eqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
 
-	my_rdma_info.sbuf_addr = (uint64_t)sbuf;
-	my_rdma_info.sbuf_key = (uint64_t)smrfd; /* FIXME: get the MR key */
-	my_rdma_info.rbuf_addr = (uint64_t)rbuf;
-	my_rdma_info.rbuf_key = (uint64_t)rmrfd; /* FIXME: get the MR key */
+	my_rma_info.sbuf_addr = (uint64_t)sbuf;
+	my_rma_info.sbuf_key = (uint64_t)smrfd; /* FIXME: get the MR key */
+	my_rma_info.rbuf_addr = (uint64_t)rbuf;
+	my_rma_info.rbuf_key = (uint64_t)rmrfd; /* FIXME: get the MR key */
 
-	printf("my rdma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
-		my_rdma_info.sbuf_addr, my_rdma_info.sbuf_key,
-		my_rdma_info.rbuf_addr, my_rdma_info.rbuf_key);
+	printf("my rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
+		my_rma_info.sbuf_addr, my_rma_info.sbuf_key,
+		my_rma_info.rbuf_addr, my_rma_info.rbuf_key);
 
-	if (fi_sendto(epfd, &my_rdma_info, sizeof(my_rdma_info), NULL, direct_addr, &sctxt) < 0) {
+	if (fi_sendto(epfd, &my_rma_info, sizeof(my_rma_info), NULL, direct_addr, &sctxt) < 0) {
 		perror("fi_sendto");
 		exit(1);
 	}
 
-	if (fi_recvfrom(epfd, &peer_rdma_info, sizeof(peer_rdma_info), NULL, NULL, &rctxt) < 0) {
+	if (fi_recvfrom(epfd, &peer_rma_info, sizeof(peer_rma_info), NULL, NULL, &rctxt) < 0) {
 		perror("fi_recvfrom");
 		exit(1);
 	}
@@ -257,9 +238,9 @@ static void exchange_info(void)
 		completed += ret / sizeof(entry);
 	}
 
-	printf("peer rdma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
-		peer_rdma_info.sbuf_addr, peer_rdma_info.sbuf_key,
-		peer_rdma_info.rbuf_addr, peer_rdma_info.rbuf_key);
+	printf("peer rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
+		peer_rma_info.sbuf_addr, peer_rma_info.sbuf_key,
+		peer_rma_info.rbuf_addr, peer_rma_info.rbuf_key);
 
 }
 
@@ -300,9 +281,9 @@ static void write_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_rdma_writeto(epfd, sbuf, size, NULL, direct_addr,
-					peer_rdma_info.rbuf_addr,
-					peer_rdma_info.rbuf_key, 
+	if ((ret = fi_writeto(epfd, sbuf, size, NULL, direct_addr,
+					peer_rma_info.rbuf_addr,
+					peer_rma_info.rbuf_key, 
 					&sctxt)) < 0) {
 		ERROR_MSG("fi_writeto", ret);
 		exit(1);
@@ -328,9 +309,9 @@ static void read_one(int size)
 	int				completed;
 	int				ret;
 
-	if ((ret = fi_rdma_readfrom (epfd, rbuf, size, NULL, direct_addr,
-					peer_rdma_info.sbuf_addr,
-					peer_rdma_info.sbuf_key,
+	if ((ret = fi_readfrom (epfd, rbuf, size, NULL, direct_addr,
+					peer_rma_info.sbuf_addr,
+					peer_rma_info.sbuf_key,
 					&rctxt)) < 0) {
 		ERROR_MSG("fi_readfrom", ret);
 		exit(1);

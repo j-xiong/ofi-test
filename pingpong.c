@@ -61,7 +61,6 @@ static void init_fabric(void)
 	struct fi_info		hints;
 	struct fi_eq_attr	eq_attr;
 	struct fi_av_attr	av_attr;
-	struct fi_resource	resources[2];
 	int 			err;
 
 	memset(&addr, 0, sizeof(addr));
@@ -73,12 +72,11 @@ static void init_fabric(void)
 
 	hints.type = FID_RDM;
 	hints.protocol = FI_PROTO_UNSPEC;
-	hints.protocol_cap = FI_PROTO_CAP_TAGGED | FI_PROTO_CAP_MSG;
-	hints.flags = FI_BUFFERED_RECV | FI_CANCEL;
+	hints.ep_cap = FI_MSG | FI_TAGGED | FI_BUFFERED_RECV;
 	hints.src_addr = (struct sockaddr *) &addr;
 	hints.src_addrlen = sizeof(struct sockaddr_in);
 
-	if (err = fi_getinfo(server_name, NULL, &hints, &fi_info)) {
+	if (err = fi_getinfo(server_name, NULL, 0, &hints, &fi_info)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
@@ -115,13 +113,13 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	resources[0].fid = (fid_t)eqfd;
-	resources[0].flags = FI_SEND | FI_RECV;
-	resources[1].fid = (fid_t)avfd;
-	resources[1].flags = 0;
+	if (err = fi_bind((fid_t)epfd, (fid_t)eqfd, FI_SEND|FI_RECV)) {
+		ERROR_MSG("fi_bind eq", err);
+		exit(1);
+	}
 
-	if (err = fi_bind((fid_t)epfd, resources, 2)) {
-		ERROR_MSG("fi_bind", err);
+	if (err = fi_bind((fid_t)epfd, (fid_t)avfd, 0)) {
+		ERROR_MSG("fi_bind av", err);
 		exit(1);
 	}
 
@@ -146,11 +144,6 @@ static void get_peer_address(void)
 
 		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
 			ERROR_MSG("fi_av_map", err);
-			exit(1);
-		}
-
-		if (err = fi_av_sync(avfd, 0, NULL)) {
-			ERROR_MSG("fi_av_sync", err);
 			exit(1);
 		}
 
@@ -199,11 +192,6 @@ static void get_peer_address(void)
 
 		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
 			ERROR_MSG("fi_av_map", err);
-			exit(1);
-		}
-
-		if (err = fi_av_sync(avfd, 0, NULL)) {
-			ERROR_MSG("fi_av_sync", err);
 			exit(1);
 		}
 	}
