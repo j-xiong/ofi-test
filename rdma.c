@@ -27,13 +27,13 @@ static struct fi_info		*fi_info;
 static struct fid_fabric	*fabricfd;
 static struct fid_domain	*domainfd;
 static struct fid_ep		*epfd;
-static struct fid_eq		*eqfd;
+static struct fid_cq		*cqfd;
 static struct fid_av		*avfd;
 static struct fid_mr		*smrfd, *rmrfd;
 static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
-static void			*direct_addr;
+static fi_addr_t		direct_addr;
 static int			opt_bidir = 0;
 static struct fi_context	sctxt, rctxt;
 static struct rma_info {
@@ -63,46 +63,54 @@ static void init_fabric(void)
 {
 	struct sockaddr_in	addr;
 	struct fi_info		hints;
-	struct fi_eq_attr	eq_attr;
+	struct fi_fabric_attr	fabric_attr;
+	struct fi_cq_attr	cq_attr;
 	struct fi_av_attr	av_attr;
 	int 			err;
+	int			version;
 
 	memset(&addr, 0, sizeof(addr));
 	memset(&hints, 0, sizeof(hints));
-	memset(&eq_attr, 0, sizeof(eq_attr));
+	memset(&cq_attr, 0, sizeof(cq_attr));
 	memset(&av_attr, 0, sizeof(av_attr));
+	memset(&fabric_attr, 0, sizeof(fabric_attr));
 
 	addr.sin_port = 0;
 
-	hints.type = FID_RDM;
-	hints.protocol = FI_PROTO_UNSPEC;
-	hints.ep_cap = FI_MSG | FI_RMA;
+	hints.ep_type = FI_EP_RDM;
+	hints.caps = FI_MSG | FI_RMA;
+	hints.src_addr = (struct sockaddr *)&addr;
+	hints.src_addrlen = sizeof(struct sockaddr_in);
+	hints.fabric_attr = &fabric_attr;
+	hints.mode = FI_CONTEXT;
 
-	if (err = fi_getinfo(server_name, NULL, 0, &hints, &fi_info)) {
+	version = FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION);
+
+	if (err = fi_getinfo(version, server_name, NULL, 0, &hints, &fi_info)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
 
-        if (err = fi_fabric(fi_info->fabric_name, 0, &fabricfd, NULL)) {
+	printf("Using SFI device: %s\n", fi_info->fabric_attr->name);
+
+        if (err = fi_fabric(fi_info->fabric_attr, &fabricfd, NULL)) {
                 ERROR_MSG("fi_fabric", err);
                 exit(1);
         }
 
-	if (err = fi_fdomain(fabricfd, fi_info, &domainfd, NULL)) {
+	if (err = fi_domain(fabricfd, fi_info, &domainfd, NULL)) {
 		ERROR_MSG("fi_domain", err);
 		exit(1);
 	}
 
-	eq_attr.domain = FI_EQ_DOMAIN_COMP;
-	eq_attr.format = FI_EQ_FORMAT_TAGGED;
-	eq_attr.size = 100;
+	cq_attr.format = FI_CQ_FORMAT_TAGGED;
+	cq_attr.size = 100;
 
-	if (err = fi_eq_open(domainfd, &eq_attr, &eqfd, NULL)) {
-		ERROR_MSG("fi_eq_open", err);
+	if (err = fi_cq_open(domainfd, &cq_attr, &cqfd, NULL)) {
+		ERROR_MSG("fi_cq_open", err);
 		exit(1);
 	}
 
-	av_attr.mask = FI_AV_ATTR_TYPE;
 	av_attr.type = FI_AV_MAP;
 
 	if (err = fi_av_open(domainfd, &av_attr, &avfd, NULL)) {
@@ -115,8 +123,8 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_bind((fid_t)epfd, (fid_t)eqfd, FI_SEND | FI_RECV)) {
-		ERROR_MSG("fi_bind eq", err);
+	if (err = fi_bind((fid_t)epfd, (fid_t)cqfd, FI_SEND|FI_RECV|FI_WRITE|FI_READ)) {
+		ERROR_MSG("fi_bind cq", err);
 		exit(1);
 	}
 
@@ -134,7 +142,7 @@ static void init_fabric(void)
 static void get_peer_address(void)
 {
 	struct sockaddr_in		partner_addr;
-	struct fi_eq_tagged_entry	entry;
+	struct fi_cq_tagged_entry	entry;
 	int				completed, err;
 
 	if (client) {
@@ -144,8 +152,8 @@ static void get_peer_address(void)
 		}
 		memcpy(&partner_addr, fi_info[0].dest_addr, fi_info[0].dest_addrlen);
 
-		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
-			ERROR_MSG("fi_av_map", err);
+		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 
@@ -154,30 +162,30 @@ static void get_peer_address(void)
 			exit(1);
 		}
 
-		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_cq_read(cqfd, &entry, sizeof(entry))))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_eq_readfrom", completed);
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
 
 	} else {
-		if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, NULL, &rctxt) < 0) {
+		if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, &rctxt) < 0) {
 			perror("fi_recvfrom");
 			exit(1);
 		}
 
-		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_cq_read(cqfd, &entry, sizeof(entry))))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_eq_readfrom", completed);
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
 
-		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
-			ERROR_MSG("fi_av_map", err);
+		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 	}
@@ -185,34 +193,34 @@ static void get_peer_address(void)
 
 static void exchange_info(void)
 {
-	struct fi_eq_tagged_entry entry;
+	struct fi_cq_tagged_entry entry;
 	struct rma_info my_rma_info;
 	int completed, ret;
 
-	if (fi_mr_reg(domainfd, sbuf, MAX_MSG_SIZE, FI_READ|FI_REMOTE_READ, 0, 1, 0, &smrfd, NULL)) {
+	if (fi_mr_reg(domainfd, sbuf, MAX_MSG_SIZE, FI_REMOTE_READ, 0, 1, 0, &smrfd, NULL)) {
 		perror("fi_mr_reg");
 		exit(1);
 	}
 
-	if (fi_mr_reg(domainfd, rbuf, MAX_MSG_SIZE, FI_WRITE|FI_REMOTE_WRITE, 0, 1, 0, &rmrfd, NULL)) {
+	if (fi_mr_reg(domainfd, rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE, 0, 2, 0, &rmrfd, NULL)) {
 		perror("fi_mr_reg");
 		exit(1);
 	}
 
-	if (fi_bind((fid_t)smrfd, (fid_t)eqfd, 0)) {
+	if (fi_bind((fid_t)smrfd, (fid_t)cqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
 
-	if (fi_bind((fid_t)rmrfd, (fid_t)eqfd, 0)) {
+	if (fi_bind((fid_t)rmrfd, (fid_t)cqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
 
 	my_rma_info.sbuf_addr = (uint64_t)sbuf;
-	my_rma_info.sbuf_key = (uint64_t)smrfd; /* FIXME: get the MR key */
+	my_rma_info.sbuf_key = fi_mr_key(smrfd);
 	my_rma_info.rbuf_addr = (uint64_t)rbuf;
-	my_rma_info.rbuf_key = (uint64_t)rmrfd; /* FIXME: get the MR key */
+	my_rma_info.rbuf_key = fi_mr_key(rmrfd);
 
 	printf("my rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
 		my_rma_info.sbuf_addr, my_rma_info.sbuf_key,
@@ -223,19 +231,19 @@ static void exchange_info(void)
 		exit(1);
 	}
 
-	if (fi_recvfrom(epfd, &peer_rma_info, sizeof(peer_rma_info), NULL, NULL, &rctxt) < 0) {
+	if (fi_recvfrom(epfd, &peer_rma_info, sizeof(peer_rma_info), NULL, 0, &rctxt) < 0) {
 		perror("fi_recvfrom");
 		exit(1);
 	}
 
 	completed = 0;
 	while (completed < 2) {
-		ret = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0);
+		ret = fi_cq_read(cqfd, &entry, sizeof(entry));
 		if (ret < 0) {
-			ERROR_MSG("fi_eq_readfrom", ret);
+			ERROR_MSG("fi_cq_read", ret);
 			exit(1);
 		}
-		completed += ret / sizeof(entry);
+		completed += ret;
 	}
 
 	printf("peer rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
@@ -246,7 +254,7 @@ static void exchange_info(void)
 
 static void sync(void)
 {
-	struct fi_eq_tagged_entry entry;
+	struct fi_cq_tagged_entry entry;
 	int dummy, dummy2;
 	int completed, ret;
 
@@ -255,19 +263,19 @@ static void sync(void)
 		exit(1);
 	}
 
-	if (fi_recvfrom(epfd, &dummy2, sizeof(dummy2), NULL, NULL, &rctxt) < 0) {
+	if (fi_recvfrom(epfd, &dummy2, sizeof(dummy2), NULL, 0, &rctxt) < 0) {
 		perror("fi_recvfrom");
 		exit(1);
 	}
 
 	completed = 0;
 	while (completed < 2) {
-		ret = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0);
+		ret = fi_cq_read(cqfd, &entry, sizeof(entry));
 		if (ret < 0) {
-			ERROR_MSG("fi_eq_readfrom", ret);
+			ERROR_MSG("fi_cq_read", ret);
 			exit(1);
 		}
-		completed += ret / sizeof(entry);
+		completed += ret;
 	}
 
 	printf("====================== sync =======================\n");
@@ -275,9 +283,7 @@ static void sync(void)
 
 static void write_one(int size)
 {
-	struct fi_eq_tagged_entry	entry;
-	void				*src_addr;
-	size_t				src_addrlen = sizeof(void *);
+	struct fi_cq_tagged_entry	entry;
 	int				completed;
 	int				ret;
 
@@ -289,11 +295,11 @@ static void write_one(int size)
 		exit(1);
 	}
 
-	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_cq_read(cqfd, (void *) &entry, sizeof(entry))))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_eq_read", completed);
+		ERROR_MSG("fi_cq_read", completed);
 		exit(1);
 	}
 
@@ -303,9 +309,7 @@ static void write_one(int size)
 
 static void read_one(int size)
 {
-	struct fi_eq_tagged_entry	entry;
-	void				*src_addr;
-	size_t				src_addrlen = sizeof(void *);
+	struct fi_cq_tagged_entry	entry;
 	int				completed;
 	int				ret;
 
@@ -317,11 +321,11 @@ static void read_one(int size)
 		exit(1);
 	}
 
-	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_cq_read(cqfd, (void *) &entry, sizeof(entry))))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_eq_read", completed);
+		ERROR_MSG("fi_cq_read", completed);
 		exit(1);
 	}
 
@@ -334,7 +338,7 @@ static inline void poll_one(int size)
 {
 	volatile char *p = rbuf + size - 1;
 	while (*p != 'a')
-		fi_progress(domainfd);
+		fi_cq_read(cqfd, NULL, 0);
 	//printf("P: %d\n", size);
 }
 
@@ -345,14 +349,14 @@ static inline void reset_one(int size)
 
 static inline wait_one(void)
 {
-	struct fi_eq_tagged_entry	entry;
+	struct fi_cq_tagged_entry	entry;
 	int completed;
 
-	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), NULL, 0)))
+	while (!(completed = fi_cq_read(cqfd, (void *) &entry, sizeof(entry))))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_eq_read", completed);
+		ERROR_MSG("fi_cq_read", completed);
 		exit(1);
 	}
 

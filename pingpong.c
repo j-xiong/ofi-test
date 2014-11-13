@@ -27,12 +27,12 @@ static struct fi_info		*fi_info;
 static struct fid_fabric	*fabricfd;
 static struct fid_domain	*domainfd;
 static struct fid_ep		*epfd;
-static struct fid_eq		*eqfd;
+static struct fid_cq		*cqfd;
 static struct fid_av		*avfd;
 static int			client = 0;
 static struct sockaddr_in	bound_addr;
 static size_t			bound_addrlen = sizeof(bound_addr);
-static void			*direct_addr;
+static fi_addr_t		direct_addr;
 static int			opt_notag = 0;
 static struct fi_context	sctxt, rctxt;
 
@@ -59,48 +59,54 @@ static void init_fabric(void)
 {
 	struct sockaddr_in	addr;
 	struct fi_info		hints;
-	struct fi_eq_attr	eq_attr;
+	struct fi_fabric_attr	fabric_attr;
+	struct fi_cq_attr	cq_attr;
 	struct fi_av_attr	av_attr;
 	int 			err;
+	int			version;
 
 	memset(&addr, 0, sizeof(addr));
 	memset(&hints, 0, sizeof(hints));
-	memset(&eq_attr, 0, sizeof(eq_attr));
+	memset(&cq_attr, 0, sizeof(cq_attr));
 	memset(&av_attr, 0, sizeof(av_attr));
+	memset(&fabric_attr, 0, sizeof(fabric_attr));
 
 	addr.sin_port = 0;
 
-	hints.type = FID_RDM;
-	hints.protocol = FI_PROTO_UNSPEC;
-	hints.ep_cap = FI_MSG | FI_TAGGED | FI_BUFFERED_RECV;
+	hints.ep_type = FI_EP_RDM;
+	hints.caps = FI_MSG | FI_TAGGED | FI_BUFFERED_RECV;
 	hints.src_addr = (struct sockaddr *) &addr;
 	hints.src_addrlen = sizeof(struct sockaddr_in);
+	hints.fabric_attr = &fabric_attr;
+	hints.mode = FI_CONTEXT;
 
-	if (err = fi_getinfo(server_name, NULL, 0, &hints, &fi_info)) {
+	version = FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION);
+
+	if (err = fi_getinfo(version, server_name, NULL, 0, &hints, &fi_info)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
 
-	if (err = fi_fabric(fi_info->fabric_name, 0, &fabricfd, NULL)) {
+	printf("Using SFI device: %s\n", fi_info->fabric_attr->name);
+
+	if (err = fi_fabric(fi_info->fabric_attr, &fabricfd, NULL)) {
 		ERROR_MSG("fi_fabric", err);
 		exit(1);
 	}
 
-	if (err = fi_fdomain(fabricfd, fi_info, &domainfd, NULL)) {
+	if (err = fi_domain(fabricfd, fi_info, &domainfd, NULL)) {
 		ERROR_MSG("fi_domain", err);
 		exit(1);
 	}
 
-	eq_attr.domain = FI_EQ_DOMAIN_COMP;
-	eq_attr.format = FI_EQ_FORMAT_TAGGED;
-	eq_attr.size = 100;
+	cq_attr.format = FI_CQ_FORMAT_TAGGED;
+	cq_attr.size = 100;
 
-	if (err = fi_eq_open(domainfd, &eq_attr, &eqfd, NULL)) {
-		ERROR_MSG("fi_eq_open", err);
+	if (err = fi_cq_open(domainfd, &cq_attr, &cqfd, NULL)) {
+		ERROR_MSG("fi_cq_open", err);
 		exit(1);
 	}
 
-	av_attr.mask = FI_AV_ATTR_TYPE;
 	av_attr.type = FI_AV_MAP;
 
 	if (err = fi_av_open(domainfd, &av_attr, &avfd, NULL)) {
@@ -113,8 +119,8 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_bind((fid_t)epfd, (fid_t)eqfd, FI_SEND|FI_RECV)) {
-		ERROR_MSG("fi_bind eq", err);
+	if (err = fi_bind((fid_t)epfd, (fid_t)cqfd, FI_SEND|FI_RECV)) {
+		ERROR_MSG("fi_bind cq", err);
 		exit(1);
 	}
 
@@ -132,7 +138,7 @@ static void init_fabric(void)
 static void get_peer_address(void)
 {
 	struct sockaddr_in		partner_addr;
-	struct fi_eq_tagged_entry	entry;
+	struct fi_cq_tagged_entry	entry;
 	int				completed, err;
 
 	if (client) {
@@ -142,8 +148,8 @@ static void get_peer_address(void)
 		}
 		memcpy(&partner_addr, fi_info[0].dest_addr, fi_info[0].dest_addrlen);
 
-		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
-			ERROR_MSG("fi_av_map", err);
+		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 
@@ -160,38 +166,38 @@ static void get_peer_address(void)
 			}
 		}
 
-		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_cq_read(cqfd, &entry, 1)))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_eq_readfrom", completed);
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
 
 	} else {
 		if (opt_notag) {
-			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, NULL, &rctxt) < 0) {
+			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, &rctxt) < 0) {
 				perror("fi_recvfrom");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, NULL, MSG_TAG, 0x0ULL, &rctxt) < 0) {
+			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, MSG_TAG, 0x0ULL, &rctxt) < 0) {
 				perror("fi_trecvfrom");
 				exit(1);
 			}
 		}
 
-		while (! (completed = fi_eq_readfrom(eqfd, &entry, sizeof(entry), NULL, 0)))
+		while (! (completed = fi_cq_read(cqfd, &entry, 1)))
 			;
 
 		if (completed < 0) {
-			ERROR_MSG("fi_eq_readfrom", completed);
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
 
-		if (err = fi_av_map(avfd, &partner_addr, 1, &direct_addr, 0)) {
-			ERROR_MSG("fi_av_map", err);
+		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 	}
@@ -200,7 +206,7 @@ static void get_peer_address(void)
 
 static void send_one(int size)
 {
-	struct fi_eq_tagged_entry	entry;
+	struct fi_cq_tagged_entry	entry;
 	void				*src_addr;
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
@@ -219,11 +225,11 @@ static void send_one(int size)
 		}
 	}
 
-	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_cq_read(cqfd, (void *) &entry, 1)))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_eq_read", completed);
+		ERROR_MSG("fi_cq_read", completed);
 		exit(1);
 	}
 
@@ -233,7 +239,7 @@ static void send_one(int size)
 
 static void recv_one(int size)
 {
-	struct fi_eq_tagged_entry	entry;
+	struct fi_cq_tagged_entry	entry;
 	void				*src_addr;
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
@@ -252,11 +258,11 @@ static void recv_one(int size)
 		}
 	}
 
-	while (!(completed = fi_eq_readfrom(eqfd, (void *) &entry, sizeof(entry), &src_addr, &src_addrlen)))
+	while (!(completed = fi_cq_read(cqfd, (void *) &entry, 1)))
 		;
 
 	if (completed < 0) {
-		ERROR_MSG("fi_eq_read", completed);
+		ERROR_MSG("fi_cq_read", completed);
 		exit(1);
 	}
 
