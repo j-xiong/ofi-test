@@ -27,7 +27,7 @@ static struct fi_info		*fi_info;
 static struct fid_fabric	*fabricfd;
 static struct fid_domain	*domainfd;
 static struct fid_ep		*epfd;
-static struct fid_cq		*cqfd;
+static struct fid_cq		*cqfd, *mrcqfd;
 static struct fid_av		*avfd;
 static struct fid_mr		*smrfd, *rmrfd;
 static int			client = 0;
@@ -107,6 +107,11 @@ static void init_fabric(void)
 	cq_attr.size = 100;
 
 	if (err = fi_cq_open(domainfd, &cq_attr, &cqfd, NULL)) {
+		ERROR_MSG("fi_cq_open", err);
+		exit(1);
+	}
+
+	if (err = fi_cq_open(domainfd, &cq_attr, &mrcqfd, NULL)) {
 		ERROR_MSG("fi_cq_open", err);
 		exit(1);
 	}
@@ -207,12 +212,12 @@ static void exchange_info(void)
 		exit(1);
 	}
 
-	if (fi_bind((fid_t)smrfd, (fid_t)cqfd, 0)) {
+	if (fi_bind((fid_t)smrfd, (fid_t)mrcqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
 
-	if (fi_bind((fid_t)rmrfd, (fid_t)cqfd, 0)) {
+	if (fi_bind((fid_t)rmrfd, (fid_t)mrcqfd, 0)) {
 		perror("fi_mr_bind");
 		exit(1);
 	}
@@ -352,7 +357,7 @@ static inline wait_one(void)
 	struct fi_cq_tagged_entry	entry;
 	int completed;
 
-	while (!(completed = fi_cq_read(cqfd, (void *) &entry, sizeof(entry))))
+	while (!(completed = fi_cq_read(mrcqfd, (void *) &entry, sizeof(entry))))
 		;
 
 	if (completed < 0) {
@@ -448,27 +453,27 @@ int main(int argc, char *argv[])
 	sync();
 
 rrr:
-	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
-		repeat = 1000;
-		n = size >> 16;
-		while (n) {
-			repeat >>= 1;
-			n >>= 1;
-		}
+	if (client || opt_bidir) {
+		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
+			repeat = 1000;
+			n = size >> 16;
+			while (n) {
+				repeat >>= 1;
+				n >>= 1;
+			}
 
-		printf("read  %-8d (x %4d): ", size, repeat);
-		fflush(stdout);
-		t1 = when();
-		for (i=0; i<repeat; i++) {
-			if (client || opt_bidir) {
+			printf("read  %-8d (x %4d): ", size, repeat);
+			fflush(stdout);
+			t1 = when();
+			for (i=0; i<repeat; i++) {
 				//reset_one(size);
 				read_one(size);
 				//poll_one(size);
 			}
+			t2 = when();
+			t = (t2 - t1) / repeat;
+			printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 		}
-		t2 = when();
-		t = (t2 - t1) / repeat;
-		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 	}
 	
 	sync();
