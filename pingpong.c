@@ -239,13 +239,6 @@ static void init_fabric(void)
 			exit(1);
 		}
 
-		if (opt.test_type == TEST_RMA) {
-			if (err = fi_cntr_open(domain, &cntr_attr, &ch[i].cntr, NULL)) {
-				ERROR_MSG("fi_cntr_open", err);
-				exit(1);
-			}
-		}
-
 		if (err = fi_endpoint(domain, fi, &ch[i].ep, NULL)) {
 			ERROR_MSG("fi_endpoint", err);
 			exit(1);
@@ -258,6 +251,36 @@ static void init_fabric(void)
 
 		if (err = fi_ep_bind(ch[i].ep, (fid_t)av, 0)) {
 			ERROR_MSG("fi_ep_bind av", err);
+			exit(1);
+		}
+
+		if (opt.test_type != TEST_RMA)
+			continue;
+
+		if (err = fi_mr_reg(domain, ch[i].sbuf, MAX_MSG_SIZE, FI_REMOTE_READ,
+				0, i+i+1, 0, &ch[i].smr, NULL)) {
+			ERROR_MSG("fi_mr_reg", err);
+			exit(1);
+		}
+
+		if (err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE,
+				0, i+i+2, 0, &ch[i].rmr, NULL)) {
+			ERROR_MSG("fi_mr_reg", err);
+			exit(1);
+		}
+
+		if (err = fi_cntr_open(domain, &cntr_attr, &ch[i].cntr, NULL)) {
+			ERROR_MSG("fi_cntr_open", err);
+			exit(1);
+		}
+
+		if (err = fi_mr_bind(ch[i].smr, (fid_t)ch[i].cntr, 0)) {
+			ERROR_MSG("fi_mr_bind", err);
+			exit(1);
+		}
+
+		if (err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, 0)) {
+			ERROR_MSG("fi_mr_bind", err);
 			exit(1);
 		}
 	}
@@ -410,35 +433,9 @@ static void run_msg_test(void)
 static void exchange_rma_info(void)
 {
 	struct rma_info my_rma_info;
-	int err;
 	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
-		err = fi_mr_reg(domain, ch[i].sbuf, MAX_MSG_SIZE, FI_REMOTE_READ,
-				0, i+i+1, 0, &ch[i].smr, NULL);
-		if (err) {
-			ERROR_MSG("fi_mr_reg", err);
-			exit(1);
-		}
-
-		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE,
-				0, i+i+2, 0, &ch[i].rmr, NULL);
-		if (err) {
-			ERROR_MSG("fi_mr_reg", err);
-			exit(1);
-		}
-
-		err = fi_mr_bind(ch[i].smr, (fid_t)ch[i].cntr, 0);
-		if (err) {
-			ERROR_MSG("fi_mr_bind", err);
-			exit(1);
-		}
-
-		err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, 0);
-		if (err) {
-			ERROR_MSG("fi_mr_bind", err);
-			exit(1);
-		}
 
 		if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
 			ch[i].peer_rma_info.sbuf_addr = 0ULL;
