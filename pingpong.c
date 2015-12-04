@@ -17,15 +17,53 @@
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
 
-#define MAX_NUM_CHANNELS	16
-#define TEST_MSG		0
-#define TEST_RMA		1
+#define MAX_NUM_CHANNELS    16
+#define TEST_MSG	    0
+#define TEST_RMA	    1
 
 #define MIN_MSG_SIZE        (1)
 #define MAX_MSG_SIZE        (1<<22)
 #define ALIGN               (1<<12)
 #define ERROR_MSG(name,err) fprintf(stderr,"%s: %s\n", name, strerror(-(err)))
 #define MSG_TAG		    (0xFFFF0000FFFF0000ULL)
+
+#define SEND_MSG(ep, buf, len, peer, context)						\
+	do {										\
+		int err;								\
+		if (opt.notag) {							\
+			err = fi_send(ep, buf, len, NULL, peer, context);		\
+			if (err < 0) {							\
+				ERROR_MSG("fi_send", err);				\
+				exit(1);						\
+			}								\
+		}									\
+		else {									\
+			err = fi_tsend(ep, buf, len, NULL, peer, MSG_TAG, context);	\
+			if (err < 0) {							\
+				ERROR_MSG("fi_tsend", err);				\
+				exit(1);						\
+			}								\
+		}									\
+	} while (0)
+
+#define RECV_MSG(ep, buf, len, peer, context)						\
+	do {										\
+		int err;								\
+		if (opt.notag) {							\
+			err = fi_recv(ep, buf, len, NULL, peer, context);		\
+			if (err < 0) {							\
+				ERROR_MSG("fi_recv", err);				\
+				exit(1);						\
+			}								\
+		}									\
+		else {									\
+			err = fi_trecv(ep,buf,len,NULL,peer,MSG_TAG,0x0ULL,context);	\
+			if (err < 0) {							\
+				ERROR_MSG("fi_trecv", err);				\
+				exit(1);						\
+			}								\
+		}									\
+	} while (0)
 
 static struct {
 	int	test_type;
@@ -62,6 +100,10 @@ static struct {
 	char			*rbuf;
 } ch[MAX_NUM_CHANNELS];
 
+/****************************
+ *	Utility funcitons
+ ****************************/
+
 static double when(void)
 {
 	struct timeval tv;
@@ -82,6 +124,20 @@ static double when(void)
 	return (double)(tv.tv_sec - tv0.tv_sec) * 1.0e6 + (double)(tv.tv_usec - tv0.tv_usec); 
 //	return (double)tv.tv_sec * 1.0e6 + (double)tv.tv_usec; 
 }
+
+static void print_options(void)
+{
+	printf("test_type = %d (%s)\n", opt.test_type, opt.test_type ? "RMA" : "MSG");
+	printf("notag = %d\n", opt.notag);
+	printf("bidir = %d\n", opt.bidir);
+	printf("num_ch = %d\n", opt.num_ch);
+	printf("client = %d\n", opt.client);
+	printf("server_name = %s\n", opt.server_name);
+}
+
+/****************************
+ *	Initialization
+ ****************************/
 
 static void init_buffer(void)
 {
@@ -204,68 +260,45 @@ static void get_peer_address(void)
 	int				completed, err;
 	int				i;
 
-	for (i=0; i<opt.num_ch; i++) {
-		if (err = fi_getname((fid_t)ch[i].ep, &bound_addr, &bound_addrlen)) {
-			ERROR_MSG("fi_getname", err);
+	if (opt.client) {
+		/* get the address of peer channel 0 */
+		if (!fi->dest_addr) {
+			fprintf(stderr, "couldn't get server address\n");
+			exit(1);
+		}
+		memcpy(&partner_addr, fi->dest_addr, fi->dest_addrlen);
+
+		if ((err = fi_av_insert(av, &partner_addr, 1, &ch[0].peer_addr,
+					0, NULL)) != 1) {
+			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 
-		if (opt.client) {
-			if (!fi->dest_addr) {
-				fprintf(stderr, "couldn't get server address\n");
-				exit(1);
-			}
-			memcpy(&partner_addr, fi->dest_addr, fi->dest_addrlen);
-
-			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
-						0, NULL)) != 1) {
-				ERROR_MSG("fi_av_insert", err);
+		/* send all my local addresses to peer channel 0 */
+		for (i=0; i<opt.num_ch; i++) {
+			bound_addrlen = sizeof(bound_addr);
+			if (err = fi_getname((fid_t)ch[i].ep, &bound_addr,
+						&bound_addrlen)) {
+				ERROR_MSG("fi_getname", err);
 				exit(1);
 			}
 
-			if (opt.notag) {
-				err = fi_send(ch[i].ep, &bound_addr, bound_addrlen,
-						NULL, ch[i].peer_addr, &ch[i].sctxt);
-				if (err < 0) {
-					ERROR_MSG("fi_send", err);
-					exit(1);
-				}
-			}
-			else {
-				err = fi_tsend(ch[i].ep, &bound_addr, bound_addrlen, NULL,
-						ch[i].peer_addr, MSG_TAG, &ch[i].sctxt);
-				if (err < 0) {
-					ERROR_MSG("fi_tsend", err);
-					exit(1);
-				}
-			}
+			SEND_MSG(ch[0].ep, &bound_addr, bound_addrlen,
+					ch[0].peer_addr, &ch[0].sctxt);
 
-			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
+			while ((completed = fi_cq_read(ch[0].cq, &entry, 1)) == -FI_EAGAIN)
 				;
 
 			if (completed < 0) {
 				ERROR_MSG("fi_cq_read", completed);
 				exit(1);
 			}
+		}
 
-		} else {
-			if (opt.notag) {
-				err = fi_recv(ch[i].ep, &partner_addr, sizeof(partner_addr),
-						 NULL, 0, &ch[i].rctxt);
-				if (err < 0) {
-					ERROR_MSG("fi_recv", err);
-					exit(1);
-				}
-			}
-			else {
-				err = fi_trecv(ch[i].ep, &partner_addr,
-						sizeof(partner_addr), NULL, 0, MSG_TAG,
-						0x0ULL, &ch[i].rctxt);
-				if (err < 0) {
-					ERROR_MSG("fi_trecv", err);
-					exit(1);
-				}
-			}
+		/* receive peer addresses except channel 0 */
+		for (i=1; i<opt.num_ch; i++) {
+			RECV_MSG(ch[i].ep, &partner_addr, sizeof(partner_addr),
+				 0, &ch[i].rctxt);
 
 			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
 				;
@@ -278,11 +311,56 @@ static void get_peer_address(void)
 			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
 						0, NULL)) != 1) {
 				ERROR_MSG("fi_av_insert", err);
+				exit(1);
+			}
+		}
+	} else {
+		/* receive all peer addresses from channel 0 */
+		for (i=0; i<opt.num_ch; i++) {
+			RECV_MSG(ch[0].ep, &partner_addr, sizeof(partner_addr),
+				 0, &ch[0].rctxt);
+
+			while ((completed = fi_cq_read(ch[0].cq, &entry, 1)) == -FI_EAGAIN)
+				;
+
+			if (completed < 0) {
+				ERROR_MSG("fi_cq_read", completed);
+				exit(1);
+			}
+
+			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
+						0, NULL)) != 1) {
+				ERROR_MSG("fi_av_insert", err);
+				exit(1);
+			}
+		}
+
+		/* send all my local addresses (except channle 0) to peer */
+		for (i=1; i<opt.num_ch; i++) {
+			bound_addrlen = sizeof(bound_addr);
+			if (err = fi_getname((fid_t)ch[i].ep, &bound_addr,
+						&bound_addrlen)) {
+				ERROR_MSG("fi_getname", err);
+				exit(1);
+			}
+
+			SEND_MSG(ch[i].ep, &bound_addr, bound_addrlen,
+					ch[i].peer_addr, &ch[i].sctxt);
+
+			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
+				;
+
+			if (completed < 0) {
+				ERROR_MSG("fi_cq_read", completed);
 				exit(1);
 			}
 		}
 	}
 }
+
+/****************************
+ *	MSG Test
+ ****************************/
 
 static void send_one(int size)
 {
@@ -294,21 +372,7 @@ static void send_one(int size)
 	int				i;
 
 	for (i=0; i<opt.num_ch; i++) {
-		if (opt.notag) {
-			if ((ret = fi_send(ch[i].ep, ch[i].sbuf, size, NULL,
-						ch[i].peer_addr, &ch[i].sctxt)) < 0) {
-				ERROR_MSG("fi_send", ret);
-				exit(1);
-			}
-		}
-		else {
-			if ((ret = fi_tsend(ch[i].ep, ch[i].sbuf, size, NULL,
-						ch[i].peer_addr, MSG_TAG,
-						&ch[i].sctxt)) < 0) {
-				ERROR_MSG("fi_tsend", ret);
-				exit(1);
-			}
-		}
+		SEND_MSG(ch[i].ep, ch[i].sbuf, size, ch[i].peer_addr, &ch[i].sctxt);
 	}
 
 	for (i=0; i<opt.num_ch; i++) {
@@ -336,21 +400,7 @@ static void recv_one(int size)
 	int				i;
 
 	for (i=0; i<opt.num_ch; i++) {
-		if (opt.notag) {
-			if ((ret = fi_recv(ch[i].ep, ch[i].rbuf, size, NULL,
-						ch[i].peer_addr, &ch[i].rctxt)) < 0) {
-				ERROR_MSG("fi_recv", ret);
-				exit(1);
-			}
-		}
-		else {
-			if ((ret = fi_trecv(ch[i].ep, ch[i].rbuf, size, NULL,
-						ch[i].peer_addr, MSG_TAG, 0x0ULL,
-						&ch[i].rctxt)) < 0) {
-				ERROR_MSG("fi_trecv", ret);
-				exit(1);
-			}
-		}
+		RECV_MSG(ch[i].ep, ch[i].rbuf, size, ch[i].peer_addr, &ch[i].rctxt);
 	}
 
 	for (i=0; i<opt.num_ch; i++) {
@@ -405,6 +455,7 @@ static void run_msg_test(void)
 /****************************
  *	RMA Test
  ****************************/
+
 static void exchange_rma_info(void)
 {
 	struct fi_cq_tagged_entry entry[2];
@@ -415,14 +466,14 @@ static void exchange_rma_info(void)
 
 	for (i=0; i<opt.num_ch; i++) {
 		err = fi_mr_reg(domain, ch[i].sbuf, MAX_MSG_SIZE, FI_REMOTE_READ,
-				0, 1, 0, &ch[i].smr, NULL);
+				0, i+i+1, 0, &ch[i].smr, NULL);
 		if (err) {
 			ERROR_MSG("fi_mr_reg", err);
 			exit(1);
 		}
 
 		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE,
-				0, 2, 0, &ch[i].rmr, NULL);
+				0, i+i+2, 0, &ch[i].rmr, NULL);
 		if (err) {
 			ERROR_MSG("fi_mr_reg", err);
 			exit(1);
@@ -442,9 +493,9 @@ static void exchange_rma_info(void)
 
 		if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
 			ch[i].peer_rma_info.sbuf_addr = 0ULL;
-			ch[i].peer_rma_info.sbuf_key = 1ULL;
+			ch[i].peer_rma_info.sbuf_key = (uint64_t)(i+i+1);
 			ch[i].peer_rma_info.rbuf_addr = 0ULL;
-			ch[i].peer_rma_info.rbuf_key = 2ULL;
+			ch[i].peer_rma_info.rbuf_key = (uint64_t)(i+i+2);
 			continue;
 		}
 
@@ -457,19 +508,11 @@ static void exchange_rma_info(void)
 			my_rma_info.sbuf_addr, my_rma_info.sbuf_key,
 			my_rma_info.rbuf_addr, my_rma_info.rbuf_key);
 
-		err = fi_send(ch[i].ep, &my_rma_info, sizeof(my_rma_info), NULL,
+		SEND_MSG(ch[i].ep, &my_rma_info, sizeof(my_rma_info),
 				ch[i].peer_addr, &ch[i].sctxt);
-		if (err < 0) {
-			ERROR_MSG("fi_send", err);
-			exit(1);
-		}
 
-		err = fi_recv(ch[i].ep, &ch[i].peer_rma_info, sizeof(ch[i].peer_rma_info),
-				NULL, 0, &ch[i].rctxt);
-		if (err < 0) {
-			ERROR_MSG("fi_recv", err);
-			exit(1);
-		}
+		RECV_MSG(ch[i].ep, &ch[i].peer_rma_info, sizeof(ch[i].peer_rma_info),
+				0, &ch[i].rctxt);
 
 		completed = 0;
 		while (completed < 2) {
@@ -494,22 +537,11 @@ static void sync(void)
 	struct fi_cq_tagged_entry entry[2];
 	int dummy, dummy2;
 	int completed, ret;
-	int err;
 	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
-		err = fi_send(ch[i].ep, &dummy, sizeof(dummy), NULL,
-				ch[i].peer_addr, &ch[i].sctxt);
-		if (err < 0) {
-			ERROR_MSG("fi_send", err);
-			exit(1);
-		}
-
-		err = fi_recv(ch[i].ep, &dummy2, sizeof(dummy2), NULL, 0, &ch[i].rctxt);
-		if (err < 0) {
-			ERROR_MSG("fi_recv", err);
-			exit(1);
-		}
+		SEND_MSG(ch[i].ep, &dummy, sizeof(dummy), ch[i].peer_addr, &ch[i].sctxt);
+		RECV_MSG(ch[i].ep, &dummy2, sizeof(dummy2), 0, &ch[i].rctxt);
 
 		completed = 0;
 		while (completed < 2) {
@@ -697,6 +729,10 @@ rrr:
 	sleep(1);
 }
 
+/****************************
+ *	Main
+ ****************************/
+
 int main(int argc, char *argv[])
 {
 	while (argc > 1) {
@@ -738,6 +774,7 @@ int main(int argc, char *argv[])
 		opt.server_name = strdup(argv[1]);
 	}
 
+	print_options();
 	init_buffer();
 	init_fabric();
 	get_peer_address();
