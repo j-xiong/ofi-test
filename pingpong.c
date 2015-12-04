@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <unistd.h>
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
 #include <rdma/fi_endpoint.h>
@@ -83,6 +84,7 @@ static struct {
 	int	bidir;
 	int	num_ch;
 	int	client;
+	char	*prov_name;
 	char	*server_name;
 } opt = { .num_ch = 1 };
 
@@ -144,6 +146,7 @@ static void print_options(void)
 	printf("bidir = %d\n", opt.bidir);
 	printf("num_ch = %d\n", opt.num_ch);
 	printf("client = %d\n", opt.client);
+	printf("prov_name = %s\n", opt.prov_name);
 	printf("server_name = %s\n", opt.server_name);
 }
 
@@ -197,6 +200,7 @@ static void init_fabric(void)
 	hints->ep_attr->type = FI_EP_RDM;
 	hints->caps = FI_MSG;
 	hints->mode = FI_CONTEXT;
+	hints->fabric_attr->prov_name = opt.prov_name;
 
 	if (opt.test_type == TEST_RMA)
 		hints->caps |= FI_RMA;
@@ -490,7 +494,7 @@ static void exchange_rma_info(void)
 	}
 }
 
-static void sync(void)
+static void synchronize(void)
 {
 	int dummy, dummy2;
 	int i;
@@ -584,7 +588,7 @@ static void run_rma_test(void)
 
 	exchange_rma_info();
 
-	sync();
+	synchronize();
 
 	for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 		repeat = 1000;
@@ -619,7 +623,7 @@ static void run_rma_test(void)
 		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
 	}
 
-	sync();
+	synchronize();
 
 rrr:
 	if (opt.client || opt.bidir) {
@@ -645,52 +649,74 @@ rrr:
 		}
 	}
 	
-	sync();
+	synchronize();
 }
 
 /****************************
  *	Main
  ****************************/
 
+void print_usage(void)
+{
+	printf("Usage: pingpong [-b][-c <num_channels>][-f <provider>][-t <test_type>]"
+		" [server_name]\n"); 
+	printf("Options:\n");
+	printf("\t-b\t\t\tbidirectional test (RMA test only)\n");
+	printf("\t-c <num_channels>\ttest over multiple channels concurrently\n");
+	printf("\t-f <provider>\t\tuse the specific provider\n");
+	printf("\t-t <test_type>\t\tperform the spcified test, <test_type> can be:\n");
+	printf("\t\t\t\tmsg ------- non-tagged send/receive\n");
+	printf("\t\t\t\ttagged ---- tagged send/receive\n");
+	printf("\t\t\t\trma ------- RMA read/write\n");
+}
+
 int main(int argc, char *argv[])
 {
-	while (argc > 1) {
-		if (argv[1][0] != '-')
+	int c;
+
+	while ((c = getopt(argc, argv, "bc:f:t:")) != -1) {
+		switch (c) {
+		case 'b':
+			opt.bidir = 1;
 			break;
 
-		if (strcmp(argv[1], "-h")==0) {
-			printf("Usage: pingpong [-msg}[-rma][-notag][-bidir]"
-				"[-num_ch <n>][-h]\n");
-			exit(1);
-		}
-		else if (strcmp(argv[1], "-msg")==0) {
-			opt.test_type = TEST_MSG;
-		}
-		else if (strcmp(argv[1], "-rma")==0) {
-			opt.test_type = TEST_RMA;
-			opt.notag = 1;
-		}
-		else if (strcmp(argv[1], "-notag")==0) {
-			opt.notag = 1;
-		}
-		else if (strcmp(argv[1], "-bidir")==0) {
-			opt.bidir = 1;
-		}
-		else if (strcmp(argv[1], "-num_ch")==0) {
-			if (argc > 2) {
-				argc--;
-				argv++;
-				opt.num_ch = atoi(argv[1]);
-			}
-		}
+		case 'c':
+			opt.num_ch = atoi(optarg);
+			break;
 
-		argc--;
-		argv++;
+		case 'f':
+			opt.prov_name = strdup(optarg);
+			break;
+
+		case 't':
+			if (strcmp(optarg, "msg") == 0) {
+				opt.test_type = TEST_MSG;
+				opt.notag = 1;
+			}
+			else if (strcmp(optarg, "tagged") == 0) {
+				opt.test_type = TEST_MSG;
+				opt.notag = 0;
+			}
+			else if (strcmp(optarg, "rma") == 0) {
+				opt.test_type = TEST_RMA;
+				opt.notag = 1;
+			}
+			else {
+				print_usage();
+				exit(1);
+			}
+			break;
+
+		default:
+			print_usage();
+			exit(1);
+			break;
+		}
 	}
 
-	if (argc > 1) {
+	if (argc > optind) {
 		opt.client = 1;
-		opt.server_name = strdup(argv[1]);
+		opt.server_name = strdup(argv[optind]);
 	}
 
 	print_options();
