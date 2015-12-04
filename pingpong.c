@@ -204,7 +204,8 @@ static void init_fabric(void)
 		hints->caps |= FI_TAGGED;
 
 	version = FI_VERSION(1, 0);
-	if (err = fi_getinfo(version, opt.server_name, NULL, 0, hints, &fi)) {
+	if (err = fi_getinfo(version, opt.server_name, "12345", 
+				(opt.client ? 0 : FI_SOURCE), hints, &fi)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
