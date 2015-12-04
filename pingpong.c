@@ -27,7 +27,7 @@
 #define SEND_MSG(ep, buf, len, peer, context)						\
 	do {										\
 		int err;								\
-		if (opt.notag) {							\
+		if (!opt.tag) {							\
 			err = fi_send(ep, buf, len, NULL, peer, context);		\
 			if (err < 0) {							\
 				ERROR_MSG("fi_send", err);				\
@@ -46,7 +46,7 @@
 #define RECV_MSG(ep, buf, len, peer, context)						\
 	do {										\
 		int err;								\
-		if (opt.notag) {							\
+		if (!opt.tag) {							\
 			err = fi_recv(ep, buf, len, NULL, peer, context);		\
 			if (err < 0) {							\
 				ERROR_MSG("fi_recv", err);				\
@@ -80,7 +80,7 @@
 
 static struct {
 	int	test_type;
-	int	notag;
+	int	tag;
 	int	bidir;
 	int	num_ch;
 	int	client;
@@ -142,7 +142,7 @@ static double when(void)
 static void print_options(void)
 {
 	printf("test_type = %d (%s)\n", opt.test_type, opt.test_type ? "RMA" : "MSG");
-	printf("notag = %d\n", opt.notag);
+	printf("tag = %d\n", opt.tag);
 	printf("bidir = %d\n", opt.bidir);
 	printf("num_ch = %d\n", opt.num_ch);
 	printf("client = %d\n", opt.client);
@@ -204,7 +204,7 @@ static void init_fabric(void)
 
 	if (opt.test_type == TEST_RMA)
 		hints->caps |= FI_RMA;
-	else if (!opt.notag)
+	else if (opt.tag)
 		hints->caps |= FI_TAGGED;
 
 	version = FI_VERSION(1, 0);
@@ -691,15 +691,15 @@ int main(int argc, char *argv[])
 		case 't':
 			if (strcmp(optarg, "msg") == 0) {
 				opt.test_type = TEST_MSG;
-				opt.notag = 1;
+				opt.tag = 0;
 			}
 			else if (strcmp(optarg, "tagged") == 0) {
 				opt.test_type = TEST_MSG;
-				opt.notag = 0;
+				opt.tag = 1;
 			}
 			else if (strcmp(optarg, "rma") == 0) {
 				opt.test_type = TEST_RMA;
-				opt.notag = 1;
+				opt.tag = 0;
 			}
 			else {
 				print_usage();
