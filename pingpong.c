@@ -17,48 +17,50 @@
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
 
+#define MAX_NUM_CHANNELS	16
+#define TEST_MSG		0
+#define TEST_RMA		1
+
 #define MIN_MSG_SIZE        (1)
 #define MAX_MSG_SIZE        (1<<22)
 #define ALIGN               (1<<12)
 #define ERROR_MSG(name,err) fprintf(stderr,"%s: %s\n", name, strerror(-(err)))
 #define MSG_TAG		    (0xFFFF0000FFFF0000ULL)
 
-static char			*sbuf, *rbuf;
-static char			*server_name = NULL;
-static struct fi_info		*fi;
-static struct fid_fabric	*fabric;
-static struct fid_domain	*domain;
-static struct fid_ep		*ep;
-static struct fid_cq		*cq;
-static struct fid_av		*av;
-static int			client = 0;
-static struct sockaddr_in	bound_addr;
-static size_t			bound_addrlen = sizeof(bound_addr);
-static fi_addr_t		direct_addr;
-static struct fi_context	sctxt, rctxt;
+static struct {
+	int	test_type;
+	int	notag;
+	int	bidir;
+	int	num_ch;
+	int	client;
+	char	*server_name;
+} opt = { .num_ch = 1 };
 
-/* RMA */
-static struct fid_cntr		*cntr;
-static struct fid_mr		*smr, *rmr;
-static struct rma_info {
+struct rma_info {
 	uint64_t	sbuf_addr;
 	uint64_t	sbuf_key;
 	uint64_t	rbuf_addr;
 	uint64_t	rbuf_key;
-} peer_rma_info;
+};
 
-#define TEST_MSG	0
-#define TEST_RMA	1
+static struct fi_info		*fi;
+static struct fid_fabric	*fabric;
+static struct fid_domain	*domain;
+static struct fid_av		*av;
 
 static struct {
-	int test_type;
-	int notag;
-	int bidir;
-} opt = {
-	.test_type = TEST_MSG,
-	.notag = 0,
-	.bidir = 0,
-};
+	struct fid_ep		*ep;
+	struct fid_cq		*cq;
+	struct fid_cntr		*cntr;		/* rma only */
+	struct fid_mr		*smr;		/* rma only */
+	struct fid_mr		*rmr;		/* rma only */
+	struct rma_info 	peer_rma_info;	/* rma only */
+	fi_addr_t		peer_addr;
+	struct fi_context	sctxt;
+	struct fi_context	rctxt;
+	char			*sbuf;
+	char			*rbuf;
+} ch[MAX_NUM_CHANNELS];
 
 static double when(void)
 {
@@ -83,21 +85,25 @@ static double when(void)
 
 static void init_buffer(void)
 {
-	if (posix_memalign((void *) &sbuf, ALIGN, MAX_MSG_SIZE)) {
-		fprintf(stderr, "No memory\n");
-		exit(1);
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		if (posix_memalign((void *) &ch[i].sbuf, ALIGN, MAX_MSG_SIZE)) {
+			fprintf(stderr, "No memory\n");
+			exit(1);
+		}
+
+		if (posix_memalign((void *) &ch[i].rbuf, ALIGN, MAX_MSG_SIZE)) {
+			fprintf(stderr, "No memory\n");
+			exit(1);
+		}
+
+		memset(ch[i].sbuf, 'a'+i, MAX_MSG_SIZE);
+		memset(ch[i].rbuf, 'o'+i, MAX_MSG_SIZE);
+
+		ch[i].sbuf[MAX_MSG_SIZE - 1] = '\0';
+		ch[i].rbuf[MAX_MSG_SIZE - 1] = '\0';
 	}
-
-	if (posix_memalign((void *) &rbuf, ALIGN, MAX_MSG_SIZE)) {
-		fprintf(stderr, "No memory\n");
-		exit(1);
-	}
-
-	memset(sbuf, 'a', MAX_MSG_SIZE);
-	memset(rbuf, 'b', MAX_MSG_SIZE);
-
-	sbuf[MAX_MSG_SIZE - 1] = '\0';
-	rbuf[MAX_MSG_SIZE - 1] = '\0';
 }
 
 static void init_fabric(void)
@@ -108,6 +114,7 @@ static void init_fabric(void)
 	struct fi_av_attr	av_attr;
 	int 			err;
 	int			version;
+	int			i;
 
 	hints = fi_allocinfo();
 	if (!hints) {
@@ -129,7 +136,7 @@ static void init_fabric(void)
 		hints->caps |= FI_TAGGED;
 
 	version = FI_VERSION(1, 0);
-	if (err = fi_getinfo(version, server_name, NULL, 0, hints, &fi)) {
+	if (err = fi_getinfo(version, opt.server_name, NULL, 0, hints, &fi)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
@@ -148,21 +155,6 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	cq_attr.format = FI_CQ_FORMAT_TAGGED;
-	cq_attr.size = 100;
-
-	if (err = fi_cq_open(domain, &cq_attr, &cq, NULL)) {
-		ERROR_MSG("fi_cq_open", err);
-		exit(1);
-	}
-
-	if (opt.test_type == TEST_RMA) {
-		if (err = fi_cntr_open(domain, &cntr_attr, &cntr, NULL)) {
-			ERROR_MSG("fi_cntr_open", err);
-			exit(1);
-		}
-	}
-
 	av_attr.type = FI_AV_MAP;
 
 	if (err = fi_av_open(domain, &av_attr, &av, NULL)) {
@@ -170,95 +162,124 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_endpoint(domain, fi, &ep, NULL)) {
-		ERROR_MSG("fi_endpoint", err);
-		exit(1);
-	}
+	for (i=0; i<opt.num_ch; i++) {
+		cq_attr.format = FI_CQ_FORMAT_TAGGED;
+		cq_attr.size = 100;
 
-	if (err = fi_ep_bind(ep, (fid_t)cq, FI_SEND|FI_RECV)) {
-		ERROR_MSG("fi_ep_bind cq", err);
-		exit(1);
-	}
+		if (err = fi_cq_open(domain, &cq_attr, &ch[i].cq, NULL)) {
+			ERROR_MSG("fi_cq_open", err);
+			exit(1);
+		}
 
-	if (err = fi_ep_bind(ep, (fid_t)av, 0)) {
-		ERROR_MSG("fi_ep_bind av", err);
-		exit(1);
-	}
+		if (opt.test_type == TEST_RMA) {
+			if (err = fi_cntr_open(domain, &cntr_attr, &ch[i].cntr, NULL)) {
+				ERROR_MSG("fi_cntr_open", err);
+				exit(1);
+			}
+		}
 
-	if (err = fi_getname((fid_t)ep, &bound_addr, &bound_addrlen)) {
-		ERROR_MSG("fi_getname", err);
-		exit(1);
+		if (err = fi_endpoint(domain, fi, &ch[i].ep, NULL)) {
+			ERROR_MSG("fi_endpoint", err);
+			exit(1);
+		}
+
+		if (err = fi_ep_bind(ch[i].ep, (fid_t)ch[i].cq, FI_SEND|FI_RECV)) {
+			ERROR_MSG("fi_ep_bind cq", err);
+			exit(1);
+		}
+
+		if (err = fi_ep_bind(ch[i].ep, (fid_t)av, 0)) {
+			ERROR_MSG("fi_ep_bind av", err);
+			exit(1);
+		}
 	}
 }
 
 static void get_peer_address(void)
 {
+	struct sockaddr_in		bound_addr;
+	size_t				bound_addrlen;
 	struct sockaddr_in		partner_addr;
 	struct fi_cq_tagged_entry	entry;
 	int				completed, err;
+	int				i;
 
-	if (client) {
-		if (!fi->dest_addr) {
-			fprintf(stderr, "couldn't get server address\n");
-			exit(1);
-		}
-		memcpy(&partner_addr, fi->dest_addr, fi->dest_addrlen);
-
-		if ((err = fi_av_insert(av, &partner_addr, 1, &direct_addr, 0, NULL)) != 1) {
-			ERROR_MSG("fi_av_insert", err);
+	for (i=0; i<opt.num_ch; i++) {
+		if (err = fi_getname((fid_t)ch[i].ep, &bound_addr, &bound_addrlen)) {
+			ERROR_MSG("fi_getname", err);
 			exit(1);
 		}
 
-		if (opt.notag) {
-			err = fi_send(ep, &bound_addr, bound_addrlen, NULL, direct_addr, &sctxt);
-			if (err < 0) {
-				ERROR_MSG("fi_send", err);
+		if (opt.client) {
+			if (!fi->dest_addr) {
+				fprintf(stderr, "couldn't get server address\n");
 				exit(1);
 			}
-		}
-		else {
-			err = fi_tsend(ep, &bound_addr, bound_addrlen, NULL, direct_addr, MSG_TAG, &sctxt);
-			if (err < 0) {
-				ERROR_MSG("fi_tsend", err);
+			memcpy(&partner_addr, fi->dest_addr, fi->dest_addrlen);
+
+			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
+						0, NULL)) != 1) {
+				ERROR_MSG("fi_av_insert", err);
 				exit(1);
 			}
-		}
 
-		while ((completed = fi_cq_read(cq, &entry, 1)) == -FI_EAGAIN)
-			;
+			if (opt.notag) {
+				err = fi_send(ch[i].ep, &bound_addr, bound_addrlen,
+						NULL, ch[i].peer_addr, &ch[i].sctxt);
+				if (err < 0) {
+					ERROR_MSG("fi_send", err);
+					exit(1);
+				}
+			}
+			else {
+				err = fi_tsend(ch[i].ep, &bound_addr, bound_addrlen, NULL,
+						ch[i].peer_addr, MSG_TAG, &ch[i].sctxt);
+				if (err < 0) {
+					ERROR_MSG("fi_tsend", err);
+					exit(1);
+				}
+			}
 
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
+			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
+				;
 
-	} else {
-		if (opt.notag) {
-			err = fi_recv(ep, &partner_addr, sizeof(partner_addr), NULL, 0, &rctxt);
-			if (err < 0) {
-				ERROR_MSG("fi_recv", err);
+			if (completed < 0) {
+				ERROR_MSG("fi_cq_read", completed);
 				exit(1);
 			}
-		}
-		else {
-			err = fi_trecv(ep, &partner_addr, sizeof(partner_addr), NULL, 0, MSG_TAG, 0x0ULL, &rctxt);
-			if (err < 0) {
-				ERROR_MSG("fi_trecv", err);
+
+		} else {
+			if (opt.notag) {
+				err = fi_recv(ch[i].ep, &partner_addr, sizeof(partner_addr),
+						 NULL, 0, &ch[i].rctxt);
+				if (err < 0) {
+					ERROR_MSG("fi_recv", err);
+					exit(1);
+				}
+			}
+			else {
+				err = fi_trecv(ch[i].ep, &partner_addr,
+						sizeof(partner_addr), NULL, 0, MSG_TAG,
+						0x0ULL, &ch[i].rctxt);
+				if (err < 0) {
+					ERROR_MSG("fi_trecv", err);
+					exit(1);
+				}
+			}
+
+			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
+				;
+
+			if (completed < 0) {
+				ERROR_MSG("fi_cq_read", completed);
 				exit(1);
 			}
-		}
 
-		while ((completed = fi_cq_read(cq, &entry, 1)) == -FI_EAGAIN)
-			;
-
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
-
-		if ((err = fi_av_insert(av, &partner_addr, 1, &direct_addr, 0, NULL)) != 1) {
-			ERROR_MSG("fi_av_insert", err);
-			exit(1);
+			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
+						0, NULL)) != 1) {
+				ERROR_MSG("fi_av_insert", err);
+				exit(1);
+			}
 		}
 	}
 }
@@ -270,30 +291,39 @@ static void send_one(int size)
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
 	int				ret;
+	int				i;
 
-	if (opt.notag) {
-		if ((ret = fi_send(ep, sbuf, size, NULL, direct_addr, &sctxt)) < 0) {
-			ERROR_MSG("fi_send", ret);
-			exit(1);
+	for (i=0; i<opt.num_ch; i++) {
+		if (opt.notag) {
+			if ((ret = fi_send(ch[i].ep, ch[i].sbuf, size, NULL,
+						ch[i].peer_addr, &ch[i].sctxt)) < 0) {
+				ERROR_MSG("fi_send", ret);
+				exit(1);
+			}
+		}
+		else {
+			if ((ret = fi_tsend(ch[i].ep, ch[i].sbuf, size, NULL,
+						ch[i].peer_addr, MSG_TAG,
+						&ch[i].sctxt)) < 0) {
+				ERROR_MSG("fi_tsend", ret);
+				exit(1);
+			}
 		}
 	}
-	else {
-		if ((ret = fi_tsend(ep, sbuf, size, NULL, direct_addr, MSG_TAG, &sctxt)) < 0) {
-			ERROR_MSG("fi_tsend", ret);
+
+	for (i=0; i<opt.num_ch; i++) {
+		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
+				== -FI_EAGAIN)
+			;
+
+		if (completed < 0) {
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
+
+		assert(entry.op_context == &ch[i].sctxt);
+//		printf("S: %d\n", size);
 	}
-
-	while ((completed = fi_cq_read(cq, (void *) &entry, 1)) == -FI_EAGAIN)
-		;
-
-	if (completed < 0) {
-		ERROR_MSG("fi_cq_read", completed);
-		exit(1);
-	}
-
-	assert(entry.op_context == &sctxt);
-//	printf("S: %d\n", size);
 }
 
 static void recv_one(int size)
@@ -303,31 +333,40 @@ static void recv_one(int size)
 	size_t				src_addrlen = sizeof(void *);
 	int				completed;
 	int				ret;
+	int				i;
 
-	if (opt.notag) {
-		if ((ret = fi_recv(ep, rbuf, size, NULL, direct_addr, &rctxt)) < 0) {
-			ERROR_MSG("fi_recv", ret);
-			exit(1);
+	for (i=0; i<opt.num_ch; i++) {
+		if (opt.notag) {
+			if ((ret = fi_recv(ch[i].ep, ch[i].rbuf, size, NULL,
+						ch[i].peer_addr, &ch[i].rctxt)) < 0) {
+				ERROR_MSG("fi_recv", ret);
+				exit(1);
+			}
+		}
+		else {
+			if ((ret = fi_trecv(ch[i].ep, ch[i].rbuf, size, NULL,
+						ch[i].peer_addr, MSG_TAG, 0x0ULL,
+						&ch[i].rctxt)) < 0) {
+				ERROR_MSG("fi_trecv", ret);
+				exit(1);
+			}
 		}
 	}
-	else {
-		if ((ret = fi_trecv(ep, rbuf, size, NULL, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
-			ERROR_MSG("fi_trecv", ret);
+
+	for (i=0; i<opt.num_ch; i++) {
+		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
+				== -FI_EAGAIN)
+			;
+
+		if (completed < 0) {
+			ERROR_MSG("fi_cq_read", completed);
 			exit(1);
 		}
+
+		assert(entry.op_context == &ch[i].rctxt);
+		assert(entry.len == size);
+//		printf("R: %d\n", size);
 	}
-
-	while ((completed = fi_cq_read(cq, (void *) &entry, 1)) == -FI_EAGAIN)
-		;
-
-	if (completed < 0) {
-		ERROR_MSG("fi_cq_read", completed);
-		exit(1);
-	}
-
-	assert(entry.op_context == &rctxt);
-	assert(entry.len == size);
-//	printf("R: %d\n", size);
 }
 
 static void run_msg_test(void)
@@ -348,7 +387,7 @@ static void run_msg_test(void)
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
-			if (client) {
+			if (opt.client) {
 				recv_one(size);
 				send_one(size);
 			}
@@ -372,72 +411,82 @@ static void exchange_rma_info(void)
 	struct rma_info my_rma_info;
 	int completed, ret;
 	int err;
+	int i;
 
-	err = fi_mr_reg(domain, sbuf, MAX_MSG_SIZE, FI_REMOTE_READ, 0, 1, 0, &smr, NULL);
-	if (err) {
-		ERROR_MSG("fi_mr_reg", err);
-		exit(1);
-	}
-
-	err = fi_mr_reg(domain, rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE, 0, 2, 0, &rmr, NULL);
-	if (err) {
-		ERROR_MSG("fi_mr_reg", err);
-		exit(1);
-	}
-
-	err = fi_mr_bind(smr, (fid_t)cntr, 0);
-	if (err) {
-		ERROR_MSG("fi_mr_bind", err);
-		exit(1);
-	}
-
-	err = fi_mr_bind(rmr, (fid_t)cntr, 0);
-	if (err) {
-		ERROR_MSG("fi_mr_bind", err);
-		exit(1);
-	}
-
-	my_rma_info.sbuf_addr = (uint64_t)sbuf;
-	my_rma_info.sbuf_key = fi_mr_key(smr);
-	my_rma_info.rbuf_addr = (uint64_t)rbuf;
-	my_rma_info.rbuf_key = fi_mr_key(rmr);
-
-	if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
-		my_rma_info.sbuf_addr = 0ULL;
-		my_rma_info.rbuf_addr = 0ULL;
-	}
-
-	printf("my rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
-		my_rma_info.sbuf_addr, my_rma_info.sbuf_key,
-		my_rma_info.rbuf_addr, my_rma_info.rbuf_key);
-
-	err = fi_send(ep, &my_rma_info, sizeof(my_rma_info), NULL, direct_addr, &sctxt);
-	if (err < 0) {
-		ERROR_MSG("fi_send", err);
-		exit(1);
-	}
-
-	err = fi_recv(ep, &peer_rma_info, sizeof(peer_rma_info), NULL, 0, &rctxt);
-	if (err < 0) {
-		ERROR_MSG("fi_recv", err);
-		exit(1);
-	}
-
-	completed = 0;
-	while (completed < 2) {
-		ret = fi_cq_read(cq, entry, 2);
-		if (ret == -FI_EAGAIN)
-			continue;
-		if (ret < 0) {
-			ERROR_MSG("fi_cq_read", ret);
+	for (i=0; i<opt.num_ch; i++) {
+		err = fi_mr_reg(domain, ch[i].sbuf, MAX_MSG_SIZE, FI_REMOTE_READ,
+				0, 1, 0, &ch[i].smr, NULL);
+		if (err) {
+			ERROR_MSG("fi_mr_reg", err);
 			exit(1);
 		}
-		completed += ret;
-	}
 
-	printf("peer rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
-		peer_rma_info.sbuf_addr, peer_rma_info.sbuf_key,
-		peer_rma_info.rbuf_addr, peer_rma_info.rbuf_key);
+		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE,
+				0, 2, 0, &ch[i].rmr, NULL);
+		if (err) {
+			ERROR_MSG("fi_mr_reg", err);
+			exit(1);
+		}
+
+		err = fi_mr_bind(ch[i].smr, (fid_t)ch[i].cntr, 0);
+		if (err) {
+			ERROR_MSG("fi_mr_bind", err);
+			exit(1);
+		}
+
+		err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, 0);
+		if (err) {
+			ERROR_MSG("fi_mr_bind", err);
+			exit(1);
+		}
+
+		if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
+			ch[i].peer_rma_info.sbuf_addr = 0ULL;
+			ch[i].peer_rma_info.sbuf_key = 1ULL;
+			ch[i].peer_rma_info.rbuf_addr = 0ULL;
+			ch[i].peer_rma_info.rbuf_key = 2ULL;
+			continue;
+		}
+
+		my_rma_info.sbuf_addr = (uint64_t)ch[i].sbuf;
+		my_rma_info.sbuf_key = fi_mr_key(ch[i].smr);
+		my_rma_info.rbuf_addr = (uint64_t)ch[i].rbuf;
+		my_rma_info.rbuf_key = fi_mr_key(ch[i].rmr);
+
+		printf("my rma info: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n",
+			my_rma_info.sbuf_addr, my_rma_info.sbuf_key,
+			my_rma_info.rbuf_addr, my_rma_info.rbuf_key);
+
+		err = fi_send(ch[i].ep, &my_rma_info, sizeof(my_rma_info), NULL,
+				ch[i].peer_addr, &ch[i].sctxt);
+		if (err < 0) {
+			ERROR_MSG("fi_send", err);
+			exit(1);
+		}
+
+		err = fi_recv(ch[i].ep, &ch[i].peer_rma_info, sizeof(ch[i].peer_rma_info),
+				NULL, 0, &ch[i].rctxt);
+		if (err < 0) {
+			ERROR_MSG("fi_recv", err);
+			exit(1);
+		}
+
+		completed = 0;
+		while (completed < 2) {
+			ret = fi_cq_read(ch[i].cq, entry, 2);
+			if (ret == -FI_EAGAIN)
+				continue;
+			if (ret < 0) {
+				ERROR_MSG("fi_cq_read", ret);
+				exit(1);
+			}
+			completed += ret;
+		}
+
+		printf("peer rma info [%d]: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n", i,
+			ch[i].peer_rma_info.sbuf_addr, ch[i].peer_rma_info.sbuf_key,
+			ch[i].peer_rma_info.rbuf_addr, ch[i].peer_rma_info.rbuf_key);
+	}
 }
 
 static void sync(void)
@@ -446,29 +495,33 @@ static void sync(void)
 	int dummy, dummy2;
 	int completed, ret;
 	int err;
+	int i;
 
-	err = fi_send(ep, &dummy, sizeof(dummy), NULL, direct_addr, &sctxt);
-	if (err < 0) {
-		ERROR_MSG("fi_send", err);
-		exit(1);
-	}
-
-	err = fi_recv(ep, &dummy2, sizeof(dummy2), NULL, 0, &rctxt);
-	if (err < 0) {
-		ERROR_MSG("fi_recv", err);
-		exit(1);
-	}
-
-	completed = 0;
-	while (completed < 2) {
-		ret = fi_cq_read(cq, entry, 2);
-		if (ret == -FI_EAGAIN)
-			continue;
-		if (ret < 0) {
-			ERROR_MSG("fi_cq_read", ret);
+	for (i=0; i<opt.num_ch; i++) {
+		err = fi_send(ch[i].ep, &dummy, sizeof(dummy), NULL,
+				ch[i].peer_addr, &ch[i].sctxt);
+		if (err < 0) {
+			ERROR_MSG("fi_send", err);
 			exit(1);
 		}
-		completed += ret;
+
+		err = fi_recv(ch[i].ep, &dummy2, sizeof(dummy2), NULL, 0, &ch[i].rctxt);
+		if (err < 0) {
+			ERROR_MSG("fi_recv", err);
+			exit(1);
+		}
+
+		completed = 0;
+		while (completed < 2) {
+			ret = fi_cq_read(ch[i].cq, entry, 2);
+			if (ret == -FI_EAGAIN)
+				continue;
+			if (ret < 0) {
+				ERROR_MSG("fi_cq_read", ret);
+				exit(1);
+			}
+			completed += ret;
+		}
 	}
 
 	printf("====================== sync =======================\n");
@@ -479,25 +532,29 @@ static void write_one(int size)
 	struct fi_cq_tagged_entry	entry;
 	int				completed;
 	int				ret;
+	int				i;
 
-	if ((ret = fi_write(ep, sbuf, size, NULL, direct_addr,
-					peer_rma_info.rbuf_addr,
-					peer_rma_info.rbuf_key, 
-					&sctxt)) < 0) {
-		ERROR_MSG("fi_write", ret);
-		exit(1);
+	for (i=0; i<opt.num_ch; i++) {
+		if ((ret = fi_write(ch[i].ep, ch[i].sbuf, size, NULL, ch[i].peer_addr,
+						ch[i].peer_rma_info.rbuf_addr,
+						ch[i].peer_rma_info.rbuf_key, 
+						&ch[i].sctxt)) < 0) {
+			ERROR_MSG("fi_write", ret);
+			exit(1);
+		}
+
+		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
+				== -FI_EAGAIN)
+			;
+
+		if (completed < 0) {
+			ERROR_MSG("fi_cq_read", completed);
+			exit(1);
+		}
+
+		assert(entry.op_context == &ch[i].sctxt);
+		//printf("W: %d\n", size);
 	}
-
-	while ((completed = fi_cq_read(cq, (void *) &entry, 1)) == -FI_EAGAIN)
-		;
-
-	if (completed < 0) {
-		ERROR_MSG("fi_cq_read", completed);
-		exit(1);
-	}
-
-	assert(entry.op_context == &sctxt);
-	//printf("W: %d\n", size);
 }
 
 static void read_one(int size)
@@ -505,53 +562,65 @@ static void read_one(int size)
 	struct fi_cq_tagged_entry	entry;
 	int				completed;
 	int				ret;
+	int				i;
 
-	if ((ret = fi_read(ep, rbuf, size, NULL, direct_addr,
-					peer_rma_info.sbuf_addr,
-					peer_rma_info.sbuf_key,
-					&rctxt)) < 0) {
-		ERROR_MSG("fi_readfrom", ret);
-		exit(1);
+	for (i=0; i<opt.num_ch; i++) {
+		if ((ret = fi_read(ch[i].ep, ch[i].rbuf, size, NULL, ch[i].peer_addr,
+						ch[i].peer_rma_info.sbuf_addr,
+						ch[i].peer_rma_info.sbuf_key,
+						&ch[i].rctxt)) < 0) {
+			ERROR_MSG("fi_readfrom", ret);
+			exit(1);
+		}
+
+		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1)) == -FI_EAGAIN)
+			;
+
+		if (completed < 0) {
+			ERROR_MSG("fi_cq_read", completed);
+			exit(1);
+		}
+
+		assert(entry.op_context == &ch[i].rctxt);
+		assert(entry.len == size);
+		//printf("R: %d\n", size);
 	}
-
-	while ((completed = fi_cq_read(cq, (void *) &entry, 1)) == -FI_EAGAIN)
-		;
-
-	if (completed < 0) {
-		ERROR_MSG("fi_cq_read", completed);
-		exit(1);
-	}
-
-	assert(entry.op_context == &rctxt);
-	assert(entry.len == size);
-	//printf("R: %d\n", size);
 }
 
 static inline void poll_one(int size)
 {
-	volatile char *p = rbuf + size - 1;
-	while (*p != 'a')
-		fi_cq_read(cq, NULL, 0);
-	//printf("P: %d\n", size);
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		volatile char *p = ch[i].rbuf + size - 1;
+		while (*p != ('a'+i))
+			fi_cq_read(ch[i].cq, NULL, 0);
+		//printf("P: %d\n", size);
+	}
 }
 
 static inline void reset_one(int size)
 {
-	rbuf[size-1] = 'b';
+	int i;
+
+	for (i=0; i<opt.num_ch; i++)
+		ch[i].rbuf[size-1] = 'o' + i;
 }
 
 static inline wait_one(void)
 {
-	static uint64_t completed = 0;
+	static uint64_t completed[MAX_NUM_CHANNELS];
 	uint64_t counter;
+	int i;
 
-	while (1) {
-		counter = fi_cntr_read(cntr);
-		if (counter > completed)
-			break;
+	for (i=0; i<opt.num_ch; i++) {
+		while (1) {
+			counter = fi_cntr_read(ch[i].cntr);
+			if (counter > completed[i])
+				break;
+		}
+		completed[i]++;
 	}
-
-	completed++;
 }
 
 static void run_rma_test(void)
@@ -576,7 +645,7 @@ static void run_rma_test(void)
 		fflush(stdout);
 		t1 = when();
 		for (i=0; i<repeat; i++) {
-			if (client) {
+			if (opt.client) {
 				write_one(size);
 				//poll_one(size);
 				//reset_one(size);
@@ -600,7 +669,7 @@ static void run_rma_test(void)
 	sync();
 
 rrr:
-	if (client || opt.bidir) {
+	if (opt.client || opt.bidir) {
 		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 			repeat = 1000;
 			n = size >> 16;
@@ -634,7 +703,12 @@ int main(int argc, char *argv[])
 		if (argv[1][0] != '-')
 			break;
 
-		if (strcmp(argv[1], "-msg")==0) {
+		if (strcmp(argv[1], "-h")==0) {
+			printf("Usage: pingpong [-msg}[-rma][-notag][-bidir]"
+				"[-num_ch <n>][-h]\n");
+			exit(1);
+		}
+		else if (strcmp(argv[1], "-msg")==0) {
 			opt.test_type = TEST_MSG;
 		}
 		else if (strcmp(argv[1], "-rma")==0) {
@@ -647,14 +721,21 @@ int main(int argc, char *argv[])
 		else if (strcmp(argv[1], "-bidir")==0) {
 			opt.bidir = 1;
 		}
+		else if (strcmp(argv[1], "-num_ch")==0) {
+			if (argc > 2) {
+				argc--;
+				argv++;
+				opt.num_ch = atoi(argv[1]);
+			}
+		}
 
 		argc--;
 		argv++;
 	}
 
 	if (argc > 1) {
-		client = 1;
-		server_name = strdup(argv[1]);
+		opt.client = 1;
+		opt.server_name = strdup(argv[1]);
 	}
 
 	init_buffer();
