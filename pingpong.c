@@ -280,12 +280,7 @@ static void init_fabric(void)
 			exit(1);
 		}
 
-		if (err = fi_mr_bind(ch[i].smr, (fid_t)ch[i].cntr, 0)) {
-			ERROR_MSG("fi_mr_bind", err);
-			exit(1);
-		}
-
-		if (err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, 0)) {
+		if (err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, FI_REMOTE_WRITE)) {
 			ERROR_MSG("fi_mr_bind", err);
 			exit(1);
 		}
