@@ -61,6 +61,22 @@
 		}									\
 	} while (0)
 
+#define WAIT_CQ(cq, n)									\
+	do {										\
+		struct fi_cq_tagged_entry entry[n];					\
+		int ret, completed = 0;							\
+		while (completed < n) {							\
+			ret = fi_cq_read(cq, entry, n);					\
+			if (ret == -FI_EAGAIN)						\
+				continue;						\
+			if (ret < 0) {							\
+				ERROR_MSG("fi_cq_read", ret);				\
+				exit(1);						\
+			}								\
+			completed += ret;						\
+		}									\
+	} while (0)
+
 static struct {
 	int	test_type;
 	int	notag;
@@ -251,8 +267,7 @@ static void get_peer_address(void)
 {
 	struct { char raw[16]; }	bound_addr, partner_addr;
 	size_t				bound_addrlen;
-	struct fi_cq_tagged_entry	entry;
-	int				completed, err;
+	int				err;
 	int				i;
 
 	if (opt.client) {
@@ -281,13 +296,7 @@ static void get_peer_address(void)
 			SEND_MSG(ch[0].ep, &bound_addr, bound_addrlen,
 					ch[0].peer_addr, &ch[0].sctxt);
 
-			while ((completed = fi_cq_read(ch[0].cq, &entry, 1)) == -FI_EAGAIN)
-				;
-
-			if (completed < 0) {
-				ERROR_MSG("fi_cq_read", completed);
-				exit(1);
-			}
+			WAIT_CQ(ch[0].cq, 1);
 		}
 
 		/* receive peer addresses except channel 0 */
@@ -295,13 +304,7 @@ static void get_peer_address(void)
 			RECV_MSG(ch[i].ep, &partner_addr, sizeof(partner_addr),
 				 0, &ch[i].rctxt);
 
-			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
-				;
-
-			if (completed < 0) {
-				ERROR_MSG("fi_cq_read", completed);
-				exit(1);
-			}
+			WAIT_CQ(ch[i].cq, 1);
 
 			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
 						0, NULL)) != 1) {
@@ -315,13 +318,7 @@ static void get_peer_address(void)
 			RECV_MSG(ch[0].ep, &partner_addr, sizeof(partner_addr),
 				 0, &ch[0].rctxt);
 
-			while ((completed = fi_cq_read(ch[0].cq, &entry, 1)) == -FI_EAGAIN)
-				;
-
-			if (completed < 0) {
-				ERROR_MSG("fi_cq_read", completed);
-				exit(1);
-			}
+			WAIT_CQ(ch[0].cq, 1);
 
 			if ((err = fi_av_insert(av, &partner_addr, 1, &ch[i].peer_addr,
 						0, NULL)) != 1) {
@@ -342,13 +339,7 @@ static void get_peer_address(void)
 			SEND_MSG(ch[i].ep, &bound_addr, bound_addrlen,
 					ch[i].peer_addr, &ch[i].sctxt);
 
-			while ((completed = fi_cq_read(ch[i].cq, &entry, 1)) == -FI_EAGAIN)
-				;
-
-			if (completed < 0) {
-				ERROR_MSG("fi_cq_read", completed);
-				exit(1);
-			}
+			WAIT_CQ(ch[i].cq, 1);
 		}
 	}
 }
@@ -359,59 +350,24 @@ static void get_peer_address(void)
 
 static void send_one(int size)
 {
-	struct fi_cq_tagged_entry	entry;
-	void				*src_addr;
-	size_t				src_addrlen = sizeof(void *);
-	int				completed;
-	int				ret;
-	int				i;
+	int i;
 
-	for (i=0; i<opt.num_ch; i++) {
+	for (i=0; i<opt.num_ch; i++)
 		SEND_MSG(ch[i].ep, ch[i].sbuf, size, ch[i].peer_addr, &ch[i].sctxt);
-	}
 
-	for (i=0; i<opt.num_ch; i++) {
-		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
-				== -FI_EAGAIN)
-			;
-
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
-
-		assert(entry.op_context == &ch[i].sctxt);
-//		printf("S: %d\n", size);
-	}
+	for (i=0; i<opt.num_ch; i++)
+		WAIT_CQ(ch[i].cq, 1);
 }
 
 static void recv_one(int size)
 {
-	struct fi_cq_tagged_entry	entry;
-	void				*src_addr;
-	size_t				src_addrlen = sizeof(void *);
-	int				completed;
-	int				ret;
-	int				i;
+	int i;
 
-	for (i=0; i<opt.num_ch; i++) {
+	for (i=0; i<opt.num_ch; i++)
 		RECV_MSG(ch[i].ep, ch[i].rbuf, size, ch[i].peer_addr, &ch[i].rctxt);
-	}
 
-	for (i=0; i<opt.num_ch; i++) {
-		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
-				== -FI_EAGAIN)
-			;
-
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
-
-		assert(entry.op_context == &ch[i].rctxt);
-		assert(entry.len == size);
-//		printf("R: %d\n", size);
-	}
+	for (i=0; i<opt.num_ch; i++)
+		WAIT_CQ(ch[i].cq, 1);
 }
 
 static void run_msg_test(void)
@@ -453,9 +409,7 @@ static void run_msg_test(void)
 
 static void exchange_rma_info(void)
 {
-	struct fi_cq_tagged_entry entry[2];
 	struct rma_info my_rma_info;
-	int completed, ret;
 	int err;
 	int i;
 
@@ -509,17 +463,7 @@ static void exchange_rma_info(void)
 		RECV_MSG(ch[i].ep, &ch[i].peer_rma_info, sizeof(ch[i].peer_rma_info),
 				0, &ch[i].rctxt);
 
-		completed = 0;
-		while (completed < 2) {
-			ret = fi_cq_read(ch[i].cq, entry, 2);
-			if (ret == -FI_EAGAIN)
-				continue;
-			if (ret < 0) {
-				ERROR_MSG("fi_cq_read", ret);
-				exit(1);
-			}
-			completed += ret;
-		}
+		WAIT_CQ(ch[i].cq, 2);
 
 		printf("peer rma info [%d]: saddr=%llx skey=%llx raddr=%llx rkey=%llx\n", i,
 			ch[i].peer_rma_info.sbuf_addr, ch[i].peer_rma_info.sbuf_key,
@@ -529,26 +473,13 @@ static void exchange_rma_info(void)
 
 static void sync(void)
 {
-	struct fi_cq_tagged_entry entry[2];
 	int dummy, dummy2;
-	int completed, ret;
 	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
 		SEND_MSG(ch[i].ep, &dummy, sizeof(dummy), ch[i].peer_addr, &ch[i].sctxt);
 		RECV_MSG(ch[i].ep, &dummy2, sizeof(dummy2), 0, &ch[i].rctxt);
-
-		completed = 0;
-		while (completed < 2) {
-			ret = fi_cq_read(ch[i].cq, entry, 2);
-			if (ret == -FI_EAGAIN)
-				continue;
-			if (ret < 0) {
-				ERROR_MSG("fi_cq_read", ret);
-				exit(1);
-			}
-			completed += ret;
-		}
+		WAIT_CQ(ch[i].cq, 2);
 	}
 
 	printf("====================== sync =======================\n");
@@ -556,10 +487,8 @@ static void sync(void)
 
 static void write_one(int size)
 {
-	struct fi_cq_tagged_entry	entry;
-	int				completed;
-	int				ret;
-	int				i;
+	int ret;
+	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
 		if ((ret = fi_write(ch[i].ep, ch[i].sbuf, size, NULL, ch[i].peer_addr,
@@ -570,26 +499,14 @@ static void write_one(int size)
 			exit(1);
 		}
 
-		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1))
-				== -FI_EAGAIN)
-			;
-
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
-
-		assert(entry.op_context == &ch[i].sctxt);
-		//printf("W: %d\n", size);
+		WAIT_CQ(ch[i].cq, 1);
 	}
 }
 
 static void read_one(int size)
 {
-	struct fi_cq_tagged_entry	entry;
-	int				completed;
-	int				ret;
-	int				i;
+	int ret;
+	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
 		if ((ret = fi_read(ch[i].ep, ch[i].rbuf, size, NULL, ch[i].peer_addr,
@@ -600,17 +517,7 @@ static void read_one(int size)
 			exit(1);
 		}
 
-		while ((completed = fi_cq_read(ch[i].cq, (void *) &entry, 1)) == -FI_EAGAIN)
-			;
-
-		if (completed < 0) {
-			ERROR_MSG("fi_cq_read", completed);
-			exit(1);
-		}
-
-		assert(entry.op_context == &ch[i].rctxt);
-		assert(entry.len == size);
-		//printf("R: %d\n", size);
+		WAIT_CQ(ch[i].cq, 1);
 	}
 }
 
