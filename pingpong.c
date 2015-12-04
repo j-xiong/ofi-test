@@ -287,6 +287,27 @@ static void init_fabric(void)
 	}
 }
 
+static finalize_fabric(void)
+{
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		if (opt.test_type == TEST_RMA) {
+			fi_close((fid_t)ch[i].cntr);
+			fi_close((fid_t)ch[i].rmr);
+			fi_close((fid_t)ch[i].smr);
+		}
+
+		fi_close((fid_t)ch[i].ep);
+		fi_close((fid_t)ch[i].cq);
+	}
+
+	fi_close((fid_t)av);
+	fi_close((fid_t)domain);
+	fi_close((fid_t)fabric);
+	fi_freeinfo(fi);
+}
+
 static void get_peer_address(void)
 {
 	struct { char raw[16]; }	bound_addr, partner_addr;
@@ -625,8 +646,6 @@ rrr:
 	}
 	
 	sync();
-
-	sleep(1);
 }
 
 /****************************
@@ -687,6 +706,8 @@ int main(int argc, char *argv[])
 		run_rma_test();
 		break;
 	}
+
+	finalize_fabric();
 
 	return 0;
 }
