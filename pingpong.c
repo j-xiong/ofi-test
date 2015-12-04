@@ -1,10 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <assert.h>
 #include <string.h>
 #include <stdint.h>
@@ -253,9 +249,8 @@ static void init_fabric(void)
 
 static void get_peer_address(void)
 {
-	struct sockaddr_in		bound_addr;
+	struct { char raw[16]; }	bound_addr, partner_addr;
 	size_t				bound_addrlen;
-	struct sockaddr_in		partner_addr;
 	struct fi_cq_tagged_entry	entry;
 	int				completed, err;
 	int				i;
