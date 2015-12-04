@@ -179,6 +179,16 @@ static void init_buffer(void)
 	}
 }
 
+static void free_buffer(void)
+{
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		free(ch[i].sbuf);
+		free(ch[i].rbuf);
+	}
+}
+
 static void init_fabric(void)
 {
 	struct fi_info		*hints;
@@ -688,6 +698,7 @@ int main(int argc, char *argv[])
 	}
 
 	finalize_fabric();
+	free_buffer();
 
 	return 0;
 }
