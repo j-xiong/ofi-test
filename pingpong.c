@@ -1,3 +1,13 @@
+/**********************************************************************
+ * 	Multi-Channel Ping-Pong Test
+ * 	for
+ * 	Open Fabric Interface 1.0
+ *
+ * 	Jianxin Xiong
+ * 	(jianxin.xiong@intel.com)
+ * 	2013,2104,2015
+ * ********************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -27,7 +37,7 @@
 #define SEND_MSG(ep, buf, len, peer, context)						\
 	do {										\
 		int err;								\
-		if (!opt.tag) {							\
+		if (!opt.tag) {								\
 			err = fi_send(ep, buf, len, NULL, peer, context);		\
 			if (err < 0) {							\
 				ERROR_MSG("fi_send", err);				\
@@ -46,7 +56,7 @@
 #define RECV_MSG(ep, buf, len, peer, context)						\
 	do {										\
 		int err;								\
-		if (!opt.tag) {							\
+		if (!opt.tag) {								\
 			err = fi_recv(ep, buf, len, NULL, peer, context);		\
 			if (err < 0) {							\
 				ERROR_MSG("fi_recv", err);				\
