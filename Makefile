@@ -1,6 +1,6 @@
-SFI=/home/jxiong/sfi
-CFLAGS=-I$(SFI)/include
-LDFLAGS=-L$(SFI)/lib -Xlinker -R$(SFI)/lib -lfabric -lrdmacm
+OFI_HOME=/home/jxiong/install/ofi-ext
+CFLAGS=-I$(OFI_HOME)/include
+LDFLAGS=-L$(OFI_HOME)/lib -Xlinker -R$(OFI_HOME)/lib -lfabric -lrdmacm
 
 TARGETS=pingpong rdma
 all: $(TARGETS)

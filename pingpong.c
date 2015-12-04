@@ -14,6 +14,7 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_tagged.h>
+#include <rdma/fi_errno.h>
 
 #define MIN_MSG_SIZE        (1)
 #define MAX_MSG_SIZE        (1<<22)
@@ -23,7 +24,7 @@
 
 static char			*sbuf, *rbuf;
 static char			*server_name = NULL;
-static struct fi_info		*fi_info;
+static struct fi_info		*fi;
 static struct fid_fabric	*fabricfd;
 static struct fid_domain	*domainfd;
 static struct fid_ep		*epfd;
@@ -57,44 +58,42 @@ static void init_buffer(void)
 
 static void init_fabric(void)
 {
-	struct sockaddr_in	addr;
-	struct fi_info		hints;
-	struct fi_fabric_attr	fabric_attr;
+	struct fi_info		*hints;
 	struct fi_cq_attr	cq_attr;
 	struct fi_av_attr	av_attr;
 	int 			err;
 	int			version;
 
-	memset(&addr, 0, sizeof(addr));
-	memset(&hints, 0, sizeof(hints));
+	hints = fi_allocinfo();
+	if (!hints) {
+		ERROR_MSG("fi_allocinfo", -ENOMEM);
+		exit(-1);
+	}
+
 	memset(&cq_attr, 0, sizeof(cq_attr));
 	memset(&av_attr, 0, sizeof(av_attr));
-	memset(&fabric_attr, 0, sizeof(fabric_attr));
 
-	addr.sin_port = 0;
+	hints->ep_attr->type = FI_EP_RDM;
+	hints->caps = FI_MSG | FI_TAGGED;
+	hints->mode = FI_CONTEXT;
 
-	hints.ep_type = FI_EP_RDM;
-	hints.caps = FI_MSG | FI_TAGGED | FI_BUFFERED_RECV;
-	hints.src_addr = (struct sockaddr *) &addr;
-	hints.src_addrlen = sizeof(struct sockaddr_in);
-	hints.fabric_attr = &fabric_attr;
-	hints.mode = FI_CONTEXT;
+	version = FI_VERSION(1, 0);
 
-	version = FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION);
-
-	if (err = fi_getinfo(version, server_name, NULL, 0, &hints, &fi_info)) {
+	if (err = fi_getinfo(version, server_name, NULL, 0, hints, &fi)) {
 		ERROR_MSG("fi_getinfo", err);
 		exit(1);
 	}
 
-	printf("Using SFI device: %s\n", fi_info->fabric_attr->name);
+	fi_freeinfo(hints);
 
-	if (err = fi_fabric(fi_info->fabric_attr, &fabricfd, NULL)) {
+	printf("Using OFI device: %s\n", fi->fabric_attr->name);
+
+	if (err = fi_fabric(fi->fabric_attr, &fabricfd, NULL)) {
 		ERROR_MSG("fi_fabric", err);
 		exit(1);
 	}
 
-	if (err = fi_domain(fabricfd, fi_info, &domainfd, NULL)) {
+	if (err = fi_domain(fabricfd, fi, &domainfd, NULL)) {
 		ERROR_MSG("fi_domain", err);
 		exit(1);
 	}
@@ -114,18 +113,18 @@ static void init_fabric(void)
 		exit(1);
 	}
 
-	if (err = fi_endpoint(domainfd, &fi_info[0], &epfd, NULL)) {
+	if (err = fi_endpoint(domainfd, fi, &epfd, NULL)) {
 		ERROR_MSG("fi_endpoint", err);
 		exit(1);
 	}
 
-	if (err = fi_bind((fid_t)epfd, (fid_t)cqfd, FI_SEND|FI_RECV)) {
-		ERROR_MSG("fi_bind cq", err);
+	if (err = fi_ep_bind(epfd, (fid_t)cqfd, FI_SEND|FI_RECV)) {
+		ERROR_MSG("fi_ep_bind cq", err);
 		exit(1);
 	}
 
-	if (err = fi_bind((fid_t)epfd, (fid_t)avfd, 0)) {
-		ERROR_MSG("fi_bind av", err);
+	if (err = fi_ep_bind(epfd, (fid_t)avfd, 0)) {
+		ERROR_MSG("fi_ep_bind av", err);
 		exit(1);
 	}
 
@@ -142,31 +141,31 @@ static void get_peer_address(void)
 	int				completed, err;
 
 	if (client) {
-		if (!fi_info[0].dest_addr) {
+		if (!fi->dest_addr) {
 			fprintf(stderr, "couldn't get server address\n");
 			exit(1);
 		}
-		memcpy(&partner_addr, fi_info[0].dest_addr, fi_info[0].dest_addrlen);
+		memcpy(&partner_addr, fi->dest_addr, fi->dest_addrlen);
 
-		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+		if ((err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) != 1) {
 			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 
 		if (opt_notag) {
-			if (fi_sendto(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, &sctxt) < 0) {
-				perror("fi_sendto");
+			if (fi_send(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, &sctxt) < 0) {
+				perror("fi_send");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_tsendto(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, MSG_TAG, &sctxt) < 0) {
-				perror("fi_tsendto");
+			if (fi_tsend(epfd, &bound_addr, bound_addrlen, NULL, direct_addr, MSG_TAG, &sctxt) < 0) {
+				perror("fi_tsend");
 				exit(1);
 			}
 		}
 
-		while (! (completed = fi_cq_read(cqfd, &entry, 1)))
+		while ((completed = fi_cq_read(cqfd, &entry, 1)) == -FI_EAGAIN)
 			;
 
 		if (completed < 0) {
@@ -176,19 +175,19 @@ static void get_peer_address(void)
 
 	} else {
 		if (opt_notag) {
-			if (fi_recvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, &rctxt) < 0) {
-				perror("fi_recvfrom");
+			if (fi_recv(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, &rctxt) < 0) {
+				perror("fi_recv");
 				exit(1);
 			}
 		}
 		else {
-			if (fi_trecvfrom(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, MSG_TAG, 0x0ULL, &rctxt) < 0) {
-				perror("fi_trecvfrom");
+			if (fi_trecv(epfd, &partner_addr, sizeof(partner_addr), NULL, 0, MSG_TAG, 0x0ULL, &rctxt) < 0) {
+				perror("fi_trecv");
 				exit(1);
 			}
 		}
 
-		while (! (completed = fi_cq_read(cqfd, &entry, 1)))
+		while ((completed = fi_cq_read(cqfd, &entry, 1)) == -FI_EAGAIN)
 			;
 
 		if (completed < 0) {
@@ -196,12 +195,11 @@ static void get_peer_address(void)
 			exit(1);
 		}
 
-		if (err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) {
+		if ((err = fi_av_insert(avfd, &partner_addr, 1, &direct_addr, 0, NULL)) != 1) {
 			ERROR_MSG("fi_av_insert", err);
 			exit(1);
 		}
 	}
-
 }
 
 static void send_one(int size)
@@ -213,19 +211,19 @@ static void send_one(int size)
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_sendto(epfd, sbuf, size, NULL, direct_addr, &sctxt)) < 0) {
-			ERROR_MSG("fi_sendto", ret);
+		if ((ret = fi_send(epfd, sbuf, size, NULL, direct_addr, &sctxt)) < 0) {
+			ERROR_MSG("fi_send", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_tsendto(epfd, sbuf, size, NULL, direct_addr, MSG_TAG, &sctxt)) < 0) {
-			ERROR_MSG("fi_tsendto", ret);
+		if ((ret = fi_tsend(epfd, sbuf, size, NULL, direct_addr, MSG_TAG, &sctxt)) < 0) {
+			ERROR_MSG("fi_tsend", ret);
 			exit(1);
 		}
 	}
 
-	while (!(completed = fi_cq_read(cqfd, (void *) &entry, 1)))
+	while ((completed = fi_cq_read(cqfd, (void *) &entry, 1)) == -FI_EAGAIN)
 		;
 
 	if (completed < 0) {
@@ -246,19 +244,19 @@ static void recv_one(int size)
 	int				ret;
 
 	if (opt_notag) {
-		if ((ret = fi_recvfrom (epfd, rbuf, size, NULL, direct_addr, &rctxt)) < 0) {
-			ERROR_MSG("fi_recvfrom", ret);
+		if ((ret = fi_recv(epfd, rbuf, size, NULL, direct_addr, &rctxt)) < 0) {
+			ERROR_MSG("fi_recv", ret);
 			exit(1);
 		}
 	}
 	else {
-		if ((ret = fi_trecvfrom (epfd, rbuf, size, NULL, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
-			ERROR_MSG("fi_trecvfrom", ret);
+		if ((ret = fi_trecv(epfd, rbuf, size, NULL, direct_addr, MSG_TAG, 0x0ULL, &rctxt)) < 0) {
+			ERROR_MSG("fi_trecv", ret);
 			exit(1);
 		}
 	}
 
-	while (!(completed = fi_cq_read(cqfd, (void *) &entry, 1)))
+	while ((completed = fi_cq_read(cqfd, (void *) &entry, 1)) == -FI_EAGAIN)
 		;
 
 	if (completed < 0) {
