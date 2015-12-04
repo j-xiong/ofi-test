@@ -254,6 +254,11 @@ static void init_fabric(void)
 			exit(1);
 		}
 
+		if (err = fi_enable(ch[i].ep)) {
+			ERROR_MSG("fi_enable", err);
+			exit(1);
+		}
+
 		if (opt.test_type != TEST_RMA)
 			continue;
 
