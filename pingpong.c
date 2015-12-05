@@ -22,11 +22,13 @@
 #include <rdma/fi_cm.h>
 #include <rdma/fi_tagged.h>
 #include <rdma/fi_rma.h>
+#include <rdma/fi_atomic.h>
 #include <rdma/fi_errno.h>
 
 #define MAX_NUM_CHANNELS    16
 #define TEST_MSG	    0
 #define TEST_RMA	    1
+#define TEST_ATOMIC	    2
 
 #define MIN_MSG_SIZE        (1)
 #define MAX_MSG_SIZE        (1<<22)
@@ -143,7 +145,10 @@ static double when(void)
 
 static void print_options(void)
 {
-	printf("test_type = %d (%s)\n", opt.test_type, opt.test_type ? "RMA" : "MSG");
+	printf("test_type = %d (%s)\n", opt.test_type,
+			(opt.test_type == 0) ? "MSG" :
+			(opt.test_type == 1) ? "RMA" :
+			(opt.test_type == 2) ? "ATOMIC" : "UNKNOWN");
 	printf("tag = %d\n", opt.tag);
 	printf("bidir = %d\n", opt.bidir);
 	printf("num_ch = %d\n", opt.num_ch);
@@ -213,6 +218,8 @@ static void init_fabric(void)
 
 	if (opt.test_type == TEST_RMA)
 		hints->caps |= FI_RMA;
+	else if (opt.test_type == TEST_ATOMIC)
+		hints->caps |= FI_ATOMIC;
 	else if (opt.tag)
 		hints->caps |= FI_TAGGED;
 
@@ -255,14 +262,15 @@ static void init_fabric(void)
 		err = fi_enable(ch[i].ep);
 		CHK_ERR("fi_enable", (err<0), err);
 
-		if (opt.test_type != TEST_RMA)
+		if (opt.test_type == TEST_MSG)
 			continue;
 
 		err = fi_mr_reg(domain, ch[i].sbuf, MAX_MSG_SIZE, FI_REMOTE_READ,
 				0, i+i+1, 0, &ch[i].smr, NULL);
 		CHK_ERR("fi_mr_reg", (err<0), err);
 
-		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE, FI_REMOTE_WRITE,
+		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE,
+				FI_REMOTE_READ | FI_REMOTE_WRITE,
 				0, i+i+2, 0, &ch[i].rmr, NULL);
 		CHK_ERR("fi_mr_reg", (err<0), err);
 
@@ -279,7 +287,7 @@ static finalize_fabric(void)
 	int i;
 
 	for (i=0; i<opt.num_ch; i++) {
-		if (opt.test_type == TEST_RMA) {
+		if (opt.test_type != TEST_MSG) {
 			fi_close((fid_t)ch[i].cntr);
 			fi_close((fid_t)ch[i].rmr);
 			fi_close((fid_t)ch[i].smr);
@@ -430,16 +438,17 @@ static void exchange_rma_info(void)
 	struct rma_info my_rma_info;
 	int i;
 
-	for (i=0; i<opt.num_ch; i++) {
-
-		if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
+	if (fi->domain_attr->mr_mode == FI_MR_SCALABLE) {
+		for (i=0; i<opt.num_ch; i++) {
 			ch[i].peer_rma_info.sbuf_addr = 0ULL;
 			ch[i].peer_rma_info.sbuf_key = (uint64_t)(i+i+1);
 			ch[i].peer_rma_info.rbuf_addr = 0ULL;
 			ch[i].peer_rma_info.rbuf_key = (uint64_t)(i+i+2);
-			continue;
 		}
+		return;
+	}
 
+	for (i=0; i<opt.num_ch; i++) {
 		my_rma_info.sbuf_addr = (uint64_t)ch[i].sbuf;
 		my_rma_info.sbuf_key = fi_mr_key(ch[i].smr);
 		my_rma_info.rbuf_addr = (uint64_t)ch[i].rbuf;
@@ -589,7 +598,6 @@ static void run_rma_test(void)
 
 	synchronize();
 
-rrr:
 	if (opt.client || opt.bidir) {
 		for (size = MIN_MSG_SIZE; size <= MAX_MSG_SIZE; size = size << 1) {
 			repeat = 1000;
@@ -617,6 +625,115 @@ rrr:
 }
 
 /****************************
+ *	Atomic Test
+ ****************************/
+
+static void atomic_one(int type, int op, int count)
+{
+	int ret;
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		ret = fi_atomic(ch[i].ep, ch[i].sbuf, count, NULL,
+				ch[i].peer_addr,
+				ch[i].peer_rma_info.rbuf_addr,
+				ch[i].peer_rma_info.rbuf_key, 
+				type, op, &ch[i].sctxt);
+		CHK_ERR("fi_atomic", (ret<0), ret);
+
+		WAIT_CQ(ch[i].cq, 1);
+	}
+}
+
+static void fetch_atomic_one(int type, int op, int count)
+{
+	int ret;
+	int i;
+
+	for (i=0; i<opt.num_ch; i++) {
+		ret = fi_fetch_atomic(ch[i].ep, ch[i].sbuf, count, NULL,
+				ch[i].rbuf, NULL,
+				ch[i].peer_addr,
+				ch[i].peer_rma_info.rbuf_addr,
+				ch[i].peer_rma_info.rbuf_key, 
+				type, op, &ch[i].rctxt);
+		CHK_ERR("fi_fetch_atomic", (ret<0), ret);
+
+		WAIT_CQ(ch[i].cq, 1);
+	}
+}
+
+static void run_atomic_test(void)
+{
+	size_t count;
+	size_t max_count;
+	double t1, t2, t;
+	int repeat, i, n;
+
+	exchange_rma_info();
+
+	synchronize();
+
+	if (!fi_atomicvalid(ch[0].ep, FI_UINT64, FI_ATOMIC_WRITE, &max_count)) {
+		for (count = 1; count <= max_count; count = count << 1) {
+			repeat = 1000;
+			n = (count * sizeof(uint64_t)) >> 16;
+			while (n) {
+				repeat >>= 1;
+				n >>= 1;
+			}
+
+			printf("atomic write u64x%-4d (x %4d): ", count, repeat);
+			fflush(stdout);
+			t1 = when();
+			for (i=0; i<repeat; i++) {
+				if (opt.client) {
+					atomic_one(FI_UINT64, FI_ATOMIC_WRITE, count);
+					if (opt.bidir)
+						wait_one();
+				}
+				else {
+					wait_one();
+					 if (opt.bidir) {
+						atomic_one(FI_UINT64, FI_ATOMIC_WRITE, count);
+					}
+				}
+			}
+			t2 = when();
+			t = (t2 - t1) / repeat;
+			printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+		}
+	}
+
+	synchronize();
+
+	if (!fi_fetch_atomicvalid(ch[0].ep, FI_UINT64, FI_ATOMIC_READ, &max_count)) {
+		if (opt.client || opt.bidir) {
+			for (count = 1; count <= max_count; count = count << 1) {
+				repeat = 1000;
+				n = (count * sizeof(uint64_t)) >> 16;
+				while (n) {
+					repeat >>= 1;
+					n >>= 1;
+				}
+
+				printf("atomic read u64x%-4d (x %4d): ", count, repeat);
+				fflush(stdout);
+				t1 = when();
+				for (i=0; i<repeat; i++) {
+					fetch_atomic_one(FI_UINT64, FI_ATOMIC_READ, count);
+				}
+				t2 = when();
+				t = (t2 - t1) / repeat;
+				printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+			}
+		}
+	}
+	
+	synchronize();
+}
+
+/****************************
  *	Main
  ****************************/
 
@@ -632,6 +749,7 @@ void print_usage(void)
 	printf("\t\t\t\tmsg ------- non-tagged send/receive\n");
 	printf("\t\t\t\ttagged ---- tagged send/receive\n");
 	printf("\t\t\t\trma ------- RMA read/write\n");
+	printf("\t\t\t\tatomic ---- atomic read/write\n");
 }
 
 int main(int argc, char *argv[])
@@ -665,6 +783,10 @@ int main(int argc, char *argv[])
 				opt.test_type = TEST_RMA;
 				opt.tag = 0;
 			}
+			else if (strcmp(optarg, "atomic") == 0) {
+				opt.test_type = TEST_ATOMIC;
+				opt.tag = 0;
+			}
 			else {
 				print_usage();
 				exit(1);
@@ -692,8 +814,13 @@ int main(int argc, char *argv[])
 	case TEST_MSG:
 		run_msg_test();
 		break;
+
 	case TEST_RMA:
 		run_rma_test();
+		break;
+
+	case TEST_ATOMIC:
+		run_atomic_test();
 		break;
 	}
 
