@@ -35,9 +35,9 @@
 #define ALIGN               (1<<12)
 #define MSG_TAG		    (0xFFFF0000FFFF0000ULL)
 
-#define CHK_ERR(name, cond, err)								\
+#define CHK_ERR(name, cond, err)							\
 	do {										\
-		if (cond) {							\
+		if (cond) {								\
 			fprintf(stderr,"%s: %s\n", name, strerror(-(err)));		\
 			exit(1);							\
 		}									\
@@ -48,11 +48,11 @@
 		int err;								\
 		if (!opt.tag) {								\
 			err = fi_send(ep, buf, len, NULL, peer, context);		\
-			CHK_ERR("fi_send", (err<0), err);					\
+			CHK_ERR("fi_send", (err<0), err);				\
 		}									\
 		else {									\
 			err = fi_tsend(ep, buf, len, NULL, peer, MSG_TAG, context);	\
-			CHK_ERR("fi_tsend", (err<0), err);					\
+			CHK_ERR("fi_tsend", (err<0), err);				\
 		}									\
 	} while (0)
 
@@ -61,11 +61,11 @@
 		int err;								\
 		if (!opt.tag) {								\
 			err = fi_recv(ep, buf, len, NULL, peer, context);		\
-			CHK_ERR("fi_recv", (err<0), err);					\
+			CHK_ERR("fi_recv", (err<0), err);				\
 		}									\
 		else {									\
 			err = fi_trecv(ep,buf,len,NULL,peer,MSG_TAG,0x0ULL,context);	\
-			CHK_ERR("fi_trecv", (err<0), err);					\
+			CHK_ERR("fi_trecv", (err<0), err);				\
 		}									\
 	} while (0)
 
@@ -77,7 +77,7 @@
 			ret = fi_cq_read(cq, entry, n);					\
 			if (ret == -FI_EAGAIN)						\
 				continue;						\
-			CHK_ERR("fi_cq_read", (ret<0), ret);					\
+			CHK_ERR("fi_cq_read", (ret<0), ret);				\
 			completed += ret;						\
 		}									\
 	} while (0)
@@ -107,10 +107,10 @@ static struct fid_av		*av;
 static struct {
 	struct fid_ep		*ep;
 	struct fid_cq		*cq;
-	struct fid_cntr		*cntr;		/* rma only */
-	struct fid_mr		*smr;		/* rma only */
-	struct fid_mr		*rmr;		/* rma only */
-	struct rma_info 	peer_rma_info;	/* rma only */
+	struct fid_cntr		*cntr;		/* unused for msg */
+	struct fid_mr		*smr;		/* unused for msg */
+	struct fid_mr		*rmr;		/* unused for msg */
+	struct rma_info 	peer_rma_info;	/* unused for msg */
 	fi_addr_t		peer_addr;
 	struct fi_context	sctxt;
 	struct fi_context	rctxt;
@@ -269,6 +269,7 @@ static void init_fabric(void)
 				0, i+i+1, 0, &ch[i].smr, NULL);
 		CHK_ERR("fi_mr_reg", (err<0), err);
 
+		/* read & write permission needed for fetch_atomic */
 		err = fi_mr_reg(domain, ch[i].rbuf, MAX_MSG_SIZE,
 				FI_REMOTE_READ | FI_REMOTE_WRITE,
 				0, i+i+2, 0, &ch[i].rmr, NULL);
