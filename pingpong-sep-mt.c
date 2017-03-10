@@ -326,6 +326,8 @@ static finalize_fabric(void)
 	fi_freeinfo(fi);
 }
 
+static void synchronize(int i);
+
 static void get_peer_address(void)
 {
 	struct { char raw[16]; }	bound_addr, partner_addr;
@@ -374,6 +376,8 @@ static void get_peer_address(void)
 			ch[i].peer_addr = fi_rx_addr(sep_peer_addr, i, 8);
 		}
 	}
+
+	synchronize(0);
 }
 
 /****************************
