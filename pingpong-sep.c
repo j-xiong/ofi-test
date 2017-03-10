@@ -82,6 +82,24 @@
 		}									\
 	} while (0)
 
+#define WAIT_CQ_PROGRESS(cq, n, num_cq, cqs)						\
+	do {										\
+		struct fi_cq_tagged_entry entry[n];					\
+		int i, ret, completed = 0;						\
+		while (completed < n) {							\
+			for (i=0; i<num_cq; i++) {					\
+				if (cq == cqs[i])					\
+					ret = fi_cq_read(cqs[i], entry, n);		\
+				else							\
+					ret = fi_cq_read(cqs[i], NULL, 0);		\
+				if (ret == -FI_EAGAIN)					\
+					continue;					\
+				CHK_ERR("fi_cq_read", (ret<0), ret);			\
+				completed += ret;					\
+			}								\
+		}									\
+	} while (0)
+
 static struct {
 	int	test_type;
 	int	tag;
@@ -479,13 +497,17 @@ static void exchange_rma_info(void)
 
 static void synchronize(void)
 {
+	struct fid_cq *cq_array[MAX_NUM_CHANNELS];
 	int dummy, dummy2;
 	int i;
+
+	for (i=0; i<opt.num_ch; i++)
+		cq_array[i] = ch[i].cq;
 
 	for (i=0; i<opt.num_ch; i++) {
 		SEND_MSG(ch[i].tx, &dummy, sizeof(dummy), ch[i].peer_addr, &ch[i].sctxt);
 		RECV_MSG(ch[i].rx, &dummy2, sizeof(dummy2), 0, &ch[i].rctxt);
-		WAIT_CQ(ch[i].cq, 2);
+		WAIT_CQ_PROGRESS(ch[i].cq, 2, opt.num_ch, cq_array);
 	}
 
 	printf("====================== sync =======================\n");
