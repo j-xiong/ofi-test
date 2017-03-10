@@ -1,11 +1,11 @@
 /**********************************************************************
- * 	Multi-Channel Ping-Pong Test using scalable endpoints
+ * 	Multi-Thread, Multi-Channel Ping-Pong Test using scalable endpoints
  * 	for
- * 	Open Fabric Interface 1.0
+ * 	Open Fabric Interface 1.x
  *
  * 	Jianxin Xiong
  * 	(jianxin.xiong@intel.com)
- * 	2013,2104,2015
+ * 	2013-2017
  * ********************************************************************/
 
 #include <stdio.h>
