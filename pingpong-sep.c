@@ -329,10 +329,6 @@ static finalize_fabric(void)
 			fi_close((fid_t)ch[i].rmr);
 			fi_close((fid_t)ch[i].smr);
 		}
-
-		fi_close((fid_t)ch[i].tx);
-		if (ch[i].rx != ch[i].tx)
-			fi_close((fid_t)ch[i].rx);
 		fi_close((fid_t)ch[i].cq);
 	}
 
