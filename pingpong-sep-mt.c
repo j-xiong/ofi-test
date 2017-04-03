@@ -8,6 +8,7 @@
  * 	2013-2017
  * ********************************************************************/
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -434,9 +435,14 @@ static void run_msg_test_mt(void)
 	pthread_t threads[MAX_NUM_CHANNELS];
 	int i;
 	void *ret;
+	cpu_set_t cpuset;
 
-	for (i=0; i<opt.num_ch; i++)
+	for (i=0; i<opt.num_ch; i++) {
+		CPU_ZERO(&cpuset);
+		CPU_SET(i, &cpuset);
 		pthread_create(&threads[i], NULL, msg_test_thread, (void *)(uintptr_t)i);
+		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
+	}
 
 	for (i=0; i<opt.num_ch; i++)
 		pthread_join(threads[i], &ret);
@@ -621,9 +627,14 @@ static void run_rma_test_mt(void)
 	pthread_t threads[MAX_NUM_CHANNELS];
 	int i;
 	void *ret;
+	cpu_set_t cpuset;
 
-	for (i=0; i<opt.num_ch; i++)
+	for (i=0; i<opt.num_ch; i++) {
+		CPU_ZERO(&cpuset);
+		CPU_SET(i, &cpuset);
 		pthread_create(&threads[i], NULL, rma_test_thread, (void *)(uintptr_t)i);
+		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
+	}
 
 	for (i=0; i<opt.num_ch; i++)
 		pthread_join(threads[i], &ret);
@@ -740,9 +751,14 @@ static void run_atomic_test_mt(void)
 	pthread_t threads[MAX_NUM_CHANNELS];
 	int i;
 	void *ret;
+	cpu_set_t cpuset;
 
-	for (i=0; i<opt.num_ch; i++)
+	for (i=0; i<opt.num_ch; i++) {
+		CPU_ZERO(&cpuset);
+		CPU_SET(i, &cpuset);
 		pthread_create(&threads[i], NULL, atomic_test_thread, (void *)(uintptr_t)i);
+		pthread_setaffinity_np(threads[i], sizeof(cpu_set_t), &cpuset);
+	}
 
 	for (i=0; i<opt.num_ch; i++)
 		pthread_join(threads[i], &ret);
