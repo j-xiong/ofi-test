@@ -223,6 +223,9 @@ static void init_fabric(void)
 	else if (opt.tag)
 		hints->caps |= FI_TAGGED;
 
+	if (opt.test_type != TEST_MSG)
+		hints->caps |= FI_RMA_EVENT;
+
 	version = FI_VERSION(1, 0);
 	err = fi_getinfo(version, opt.server_name, "12345", 
 				(opt.client ? 0 : FI_SOURCE), hints, &fi);
@@ -278,8 +281,8 @@ static void init_fabric(void)
 		err = fi_cntr_open(domain, &cntr_attr, &ch[i].cntr, NULL);
 		CHK_ERR("fi_cntr_open", (err<0), err);
 
-		err = fi_mr_bind(ch[i].rmr, (fid_t)ch[i].cntr, FI_REMOTE_WRITE);
-		CHK_ERR("fi_mr_bind", (err<0), err);
+		err = fi_ep_bind(ch[i].ep, (fid_t)ch[i].cntr, FI_REMOTE_WRITE);
+		CHK_ERR("fi_ep_bind cntr", (err<0), err);
 	}
 }
 
