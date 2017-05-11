@@ -162,6 +162,35 @@ static void print_options(void)
 	printf("server_name = %s\n", opt.server_name);
 }
 
+pthread_mutex_t	mutex = PTHREAD_MUTEX_INITIALIZER;
+int barrier_cnt;
+int barrier_flag;
+int toggle[MAX_NUM_CHANNELS];
+
+static void barrier(int ch)
+{
+	int local_cnt;
+	int local_flag;
+
+	toggle[ch] = 1 - toggle[ch];
+
+	pthread_mutex_lock(&mutex);
+	barrier_cnt++;
+	local_cnt = barrier_cnt;
+	pthread_mutex_unlock(&mutex);
+    
+	if (local_cnt == opt.num_ch) {
+		barrier_cnt = 0;
+		barrier_flag = toggle[ch];
+	} else {
+		do {
+			pthread_mutex_lock(&mutex);
+			local_flag = barrier_flag;
+			pthread_mutex_unlock(&mutex);
+		} while (local_flag != toggle[ch]);
+	}
+}
+
 /****************************
  *	Initialization
  ****************************/
@@ -412,9 +441,12 @@ static void *msg_test_thread(void *arg)
 			n >>= 1;
 		}
 
-		printf("%3d: send/recv %-8d (x %4d): ", ch, size, repeat);
-		fflush(stdout);
-		t1 = when();
+		if (ch == 0) {
+			printf("%3d: send/recv %-8d (x %4d): ", ch, size, repeat);
+			fflush(stdout);
+			t1 = when();
+		}
+		barrier(ch);
 		for (i=0; i<repeat; i++) {
 			if (opt.client) {
 				recv_one(ch, size);
@@ -425,9 +457,12 @@ static void *msg_test_thread(void *arg)
 				recv_one(ch, size);
 			}
 		}
-		t2 = when();
-		t = (t2 - t1) / repeat / 2;
-		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+		barrier(ch);
+		if (ch == 0) {
+			t2 = when();
+			t = (t2 - t1) / repeat / 2;
+			printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
+		}
 	}
 
 	return (void *)0;
@@ -570,9 +605,12 @@ static void *rma_test_thread(void *arg)
 			n >>= 1;
 		}
 
-		printf("%3d: write %-8d (x %4d): ", ch, size, repeat);
-		fflush(stdout);
-		t1 = when();
+		if (ch == 0) {
+			printf("%3d: write %-8d (x %4d): ", ch, size, repeat);
+			fflush(stdout);
+			t1 = when();
+		}
+		barrier(ch);
 		for (i=0; i<repeat; i++) {
 			if (opt.client) {
 				write_one(ch, size);
@@ -590,9 +628,12 @@ static void *rma_test_thread(void *arg)
 				}
 			}
 		}
-		t2 = when();
-		t = (t2 - t1) / repeat;
-		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+		barrier(ch);
+		if (ch == 0) {
+			t2 = when();
+			t = (t2 - t1) / repeat;
+			printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
+		}
 	}
 
 	synchronize(ch);
@@ -606,17 +647,23 @@ static void *rma_test_thread(void *arg)
 				n >>= 1;
 			}
 
-			printf("%3d: read  %-8d (x %4d): ", ch, size, repeat);
-			fflush(stdout);
-			t1 = when();
+			if (ch == 0) {
+				printf("%3d: read  %-8d (x %4d): ", ch, size, repeat);
+				fflush(stdout);
+				t1 = when();
+			}
+			barrier(ch);
 			for (i=0; i<repeat; i++) {
 				//reset_one(ch, size);
 				read_one(ch, size);
 				//poll_one(ch, size);
 			}
-			t2 = when();
-			t = (t2 - t1) / repeat;
-			printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+			barrier(ch);
+			if (ch == 0) {
+				t2 = when();
+				t = (t2 - t1) / repeat;
+				printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
+			}
 		}
 	}
 	
@@ -697,9 +744,12 @@ static void *atomic_test_thread(void *arg)
 				n >>= 1;
 			}
 
-			printf("%3d: atomic write u64x%-4d (x %4d): ", chn, count, repeat);
-			fflush(stdout);
-			t1 = when();
+			if (chn == 0) {
+				printf("%3d: atomic write u64x%-4d (x %4d): ", chn, count, repeat);
+				fflush(stdout);
+				t1 = when();
+			}
+			barrier(chn);
 			for (i=0; i<repeat; i++) {
 				if (opt.client) {
 					atomic_one(chn, FI_UINT64, FI_ATOMIC_WRITE, count);
@@ -713,9 +763,13 @@ static void *atomic_test_thread(void *arg)
 					}
 				}
 			}
-			t2 = when();
-			t = (t2 - t1) / repeat;
-			printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+			barrier(chn);
+			if (chn == 0) {
+				t2 = when();
+				t = (t2 - t1) / repeat;
+				printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t,
+					(count * sizeof(uint64_t) * opt.num_ch)/t);
+			}
 		}
 	}
 
@@ -731,15 +785,22 @@ static void *atomic_test_thread(void *arg)
 					n >>= 1;
 				}
 
-				printf("%3d: atomic read u64x%-4d (x %4d): ", chn, count, repeat);
-				fflush(stdout);
-				t1 = when();
+				if (chn ==0) {
+					printf("%3d: atomic read u64x%-4d (x %4d): ", chn, count, repeat);
+					fflush(stdout);
+					t1 = when();
+				}
+				barrier(chn);
 				for (i=0; i<repeat; i++) {
 					fetch_atomic_one(chn, FI_UINT64, FI_ATOMIC_READ, count);
 				}
-				t2 = when();
-				t = (t2 - t1) / repeat;
-				printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+				barrier(chn);
+				if (chn == 0) {
+					t2 = when();
+					t = (t2 - t1) / repeat;
+					printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t,
+						(count * sizeof(uint64_t) * opt.num_ch)/t);
+				}
 			}
 		}
 	}
