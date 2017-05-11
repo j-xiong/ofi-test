@@ -25,7 +25,7 @@
 #include <rdma/fi_atomic.h>
 #include <rdma/fi_errno.h>
 
-#define MAX_NUM_CHANNELS    16
+#define MAX_NUM_CHANNELS    80
 #define TEST_MSG	    0
 #define TEST_RMA	    1
 #define TEST_ATOMIC	    2
@@ -665,6 +665,10 @@ int main(int argc, char *argv[])
 		switch (c) {
 		case 'c':
 			opt.num_ch = atoi(optarg);
+			if (opt.num_ch <= 0 || opt.num_ch > MAX_NUM_CHANNELS) {
+				printf("The number of channels must be 1~%d\n", MAX_NUM_CHANNELS);
+				exit(1);
+			}
 			break;
 
 		case 'f':
