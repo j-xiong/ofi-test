@@ -449,18 +449,26 @@ static void *msg_test_thread(void *arg)
 		barrier(ch);
 		for (i=0; i<repeat; i++) {
 			if (opt.client) {
-				recv_one(ch, size);
 				send_one(ch, size);
+				if (opt.bidir)
+					recv_one(ch, size);
 			}
 			else {
-				send_one(ch, size);
 				recv_one(ch, size);
+				if (opt.bidir)
+					send_one(ch, size);
 			}
+		}
+		if (!opt.bidir) {
+			if (opt.client)
+				recv_one(ch, 1);
+			else
+				send_one(ch, 1);
 		}
 		barrier(ch);
 		if (ch == 0) {
 			t2 = when();
-			t = (t2 - t1) / repeat / 2;
+			t = (t2 - t1) / repeat / (opt.bidir ? 2 : 1);
 			printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
 		}
 	}
@@ -834,10 +842,11 @@ static void run_atomic_test_mt(void)
 
 void print_usage(void)
 {
-	printf("Usage: pingpong [-b][-c <num_channels>][-f <provider>][-t <test_type>]"
+	printf("Usage: pingpong [-1][-2][-s][-c <num_channels>][-f <provider>][-t <test_type>]"
 		" [server_name]\n"); 
 	printf("Options:\n");
-	printf("\t-b\t\t\tbidirectional test (RMA test only)\n");
+	printf("\t-1\t\t\tone-way test (default foe RMA test)\n");
+	printf("\t-2\t\t\tbidirectional test (default for send/recv test)\n");
 	printf("\t-c <num_channels>\ttest over multiple channels concurrently\n");
 	printf("\t-f <provider>\t\tuse the specific provider\n");
 	printf("\t-t <test_type>\t\tperform the spcified test, <test_type> can be:\n");
@@ -851,9 +860,14 @@ int main(int argc, char *argv[])
 {
 	int c;
 
-	while ((c = getopt(argc, argv, "bc:f:t:")) != -1) {
+	opt.bidir = -1;
+	while ((c = getopt(argc, argv, "12c:f:t:")) != -1) {
 		switch (c) {
-		case 'b':
+		case '1':
+			opt.bidir = 0;
+			break;
+
+		case '2':
 			opt.bidir = 1;
 			break;
 
@@ -903,6 +917,9 @@ int main(int argc, char *argv[])
 		opt.client = 1;
 		opt.server_name = strdup(argv[optind]);
 	}
+
+	if (opt.bidir == -1)
+		opt.bidir = opt.test_type == TEST_MSG ? 1 : 0;
 
 	print_options();
 	init_buffer();
