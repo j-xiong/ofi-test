@@ -12,7 +12,7 @@ OFI_HOME ?= /usr/local/ofi
 CFLAGS    = -I$(OFI_HOME)/include -g
 LDFLAGS   = -L$(OFI_HOME)/lib -Xlinker -R$(OFI_HOME)/lib -lfabric
 
-TARGETS=pingpong pingpong-sep pingpong-sep-mt pingpong-self
+TARGETS=pingpong pingpong-sep pingpong-sep-mt pingpong-self hello
 all: $(TARGETS)
 
 pingpong: pingpong.c Makefile
@@ -26,6 +26,9 @@ pingpong-sep-mt: pingpong-sep-mt.c Makefile
 
 pingpong-self: pingpong-self.c Makefile
 	cc pingpong-self.c -o pingpong-self $(CFLAGS) $(LDFLAGS)
+
+hello: hello.c Makefile
+	cc hello.c -o hello $(CFLAGS) $(LDFLAGS)
 
 clean:
 	rm $(TARGETS)
