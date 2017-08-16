@@ -277,7 +277,7 @@ static void init_fabric(void)
 	err = fi_domain(fabric, fi, &domain, NULL);
 	CHK_ERR("fi_domain", (err<0), err);
 
-	av_attr.type = FI_AV_MAP;
+	av_attr.type = FI_AV_UNSPEC;
 	av_attr.rx_ctx_bits = 8;
 
 	err = fi_av_open(domain, &av_attr, &av, NULL);
