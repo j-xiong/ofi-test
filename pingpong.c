@@ -429,7 +429,7 @@ static void run_msg_test(void)
 		}
 		t2 = when();
 		t = (t2 - t1) / repeat / 2;
-		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+		printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MS/s\n", t, size/t, size * opt.num_ch/t);
 	}
 }
 
@@ -597,7 +597,7 @@ static void run_rma_test(void)
 		}
 		t2 = when();
 		t = (t2 - t1) / repeat;
-		printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+		printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
 	}
 
 	synchronize();
@@ -621,7 +621,7 @@ static void run_rma_test(void)
 			}
 			t2 = when();
 			t = (t2 - t1) / repeat;
-			printf("%8.2lf us, %8.2lf MB/s\n", t, size/t);
+			printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, size/t, size * opt.num_ch/t);
 		}
 	}
 	
@@ -705,7 +705,8 @@ static void run_atomic_test(void)
 			}
 			t2 = when();
 			t = (t2 - t1) / repeat;
-			printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+			printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t,
+				(count * sizeof(uint64_t) * opt.num_ch)/t);
 		}
 	}
 
@@ -729,7 +730,8 @@ static void run_atomic_test(void)
 				}
 				t2 = when();
 				t = (t2 - t1) / repeat;
-				printf("%8.2lf us, %8.2lf MB/s\n", t, (count * sizeof(uint64_t))/t);
+				printf("%8.2lf us, %8.2lf MB/s, total %8.2lf MS/s\n", t, (count * sizeof(uint64_t))/t,
+					(count * sizeof(uint64_t) * opt.num_ch)/t);
 			}
 		}
 	}
