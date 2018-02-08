@@ -253,6 +253,9 @@ static void init_fabric(void)
 		err = fi_cq_open(domain, &cq_attr, &ch[i].cq, NULL);
 		CHK_ERR("fi_cq_open", (err<0), err);
 
+		if (i > 0)
+			fi->src_addr = NULL;
+
 		err = fi_endpoint(domain, fi, &ch[i].ep, NULL);
 		CHK_ERR("fi_endpoint", (err<0), err);
 
